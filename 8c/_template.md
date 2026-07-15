@@ -26,6 +26,18 @@ misread.
 > Example: "test case = a YAML file describing a source/target comparison. Not a
 > pytest function."
 
+## How new work follows existing patterns
+**Write this section.** It is the one that stops the agent asking your PO to
+re-specify things the codebase already decided.
+
+Most feature tickets EXTEND a pattern rather than invent one. The agent cannot
+know that. Tell it what the patterns are and that following them is the default.
+> Example: "New source types follow the existing source pattern exactly - same
+> YAML block shape, same key-based comparison support, same missing-file error
+> behaviour. Never invent a new YAML shape; mirror the existing sources. If a
+> ticket does not say otherwise, consistency with existing sources IS the
+> requirement."
+
 ## How work usually arrives
 The shape of a typical ticket, and what a typical change touches.
 

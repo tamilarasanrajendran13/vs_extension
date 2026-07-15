@@ -40,7 +40,7 @@ import transport as transport_mod
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 
-SPEC_PROMPT_VERSION = "spec@6"
+SPEC_PROMPT_VERSION = "spec@7"
 
 NO_CONTEXT_NOTICE = """
 !! You have NOT been told what this project is. You have not seen the code.
@@ -114,13 +114,43 @@ Return ONLY a JSON object. No prose, no markdown fences.
 
 THREE KINDS OF GAP. Sorting them correctly is the entire job:
 
-  blocking_questions  = the answer does not exist yet, anywhere. It is a decision
-                        nobody has made, a business rule only a human knows, a
-                        target value, a preference between valid options.
-                        Reading the entire codebase would not answer it.
-                        e.g. "Should timeouts retry, or fail fast and alert?"
-                             "What is the acceptable data loss window?"
-                             "Which of these two behaviours does the client want?"
+  blocking_questions  = the answer does not exist yet, ANYWHERE - not in the
+                        code, not in precedent, not in anyone's head but the
+                        author's. A decision nobody has made, about something
+                        with NO existing equivalent in this codebase.
+                        e.g. "What is the acceptable data loss window?"
+                             "Which Cobrix options must be configurable?" (nothing
+                              in this codebase has ever had Cobrix options)
+
+                        PRECEDENT BEATS PREFERENCE. Before you mark anything
+                        blocking, ask: does this project ALREADY do something
+                        like this? Almost every feature ticket extends a pattern
+                        rather than inventing one, and in a mature codebase the
+                        default answer to "how should X behave?" is "the same way
+                        the existing Xs behave".
+
+                        If a precedent could plausibly exist, it is an
+                        INVESTIGATION, not a blocking question:
+                          "What YAML shape should the new source use?"
+                              -> other source types have a YAML shape. Read one.
+                              -> INVESTIGATION: "What YAML shape do existing
+                                 source types use?"
+                          "Should it support key-based comparison?"
+                              -> if other sources do, this one does.
+                              -> INVESTIGATION: "Do existing sources support
+                                 key-based comparison?"
+                          "What happens when a required file is missing?"
+                              -> the framework already handles missing files.
+                              -> INVESTIGATION: "How do existing sources handle a
+                                 missing required file?"
+
+                        You have not seen the code, so you cannot confirm a
+                        precedent exists - and you do not need to. Phrase it as
+                        an investigation and let the planner look. If no precedent
+                        turns out to exist, the planner will raise it then, with
+                        evidence. Asking a human to specify something the codebase
+                        already decided is the fastest way to make this gate
+                        ignored.
 
   prerequisites       = nobody ANSWERS this - someone SUPPLIES it. A file, a
                         fixture, a driver, a credential. The response is an
@@ -138,9 +168,15 @@ THREE KINDS OF GAP. Sorting them correctly is the entire job:
                              "What does the current validation do on mismatch?"
 
 Rules:
-- Default to investigations. Only call something blocking when you are confident
-  no amount of code reading would answer it. A false blocker wastes a human's
-  time and trains people to ignore this gate.
+- Default to investigations, hard. Only call something blocking when you are
+  confident that NO precedent could exist and a genuine choice must be made. A
+  false blocker wastes a human's time and trains people to ignore this gate,
+  which costs more than the tickets it catches.
+- THE TEST: "if I asked a developer on this team, would they say 'just do it like
+  the existing ones'?" If yes, it is an investigation. If they would have to go
+  ask someone or make a call, it is blocking.
+- Consistency with existing code is a valid answer and usually the RIGHT one.
+  A ticket that extends a pattern does not need the pattern re-specified.
 TESTABLE means: is there an OBSERVABLE OUTCOME you could assert on, such that a
 broken implementation would fail the test? That is the entire question.
 
@@ -317,6 +353,22 @@ def fetch_ticket(cfg: dict, ticket_id: str) -> tuple[str, dict]:
     ticket["clarifications"] = answers
     if answers:
         text += "\n\n" + clarify.format_clarifications(answers)
+
+    # Prerequisites are satisfied by ATTACHMENTS, not answers. Nobody replies to
+    # "is there a sample copybook?" - they attach one. Pull them down so the gate
+    # can see the file exists rather than take someone's word for it.
+    wb = Path(cfg.get("_workbench", Path(__file__).parent))
+    dest = wb / "workspaces" / cfg.get("_project", "unknown") / "tickets" / ticket_id / "attachments"
+    try:
+        atts = client.get_attachments(ticket_id)
+        pulled = clarify.download_all(client, atts, dest) if atts else []
+    except Exception:
+        pulled = []            # attachments are a bonus, never a reason to fail
+    ticket["attachments"] = pulled
+    ok_files = [a for a in pulled if a.get("ok")]
+    if ok_files:
+        text += "\n\n=== FILES ATTACHED TO THIS TICKET (downloaded locally) ===\n"
+        text += "\n".join(f"- {a['filename']}  ->  {a['path']}" for a in ok_files)
 
     ticket["_client"] = client
     return text, ticket
@@ -944,6 +996,52 @@ def _self_test() -> int:
         "blocking_questions": [], "contradictions": []})
     ok.append(("genuinely vague criteria still fail", v["score"] < 1.0))
 
+    # --- precedent beats preference ------------------------------------------
+    # THE regression, from a real run. Four of five "blocking questions" had
+    # existing answers in the codebase - the agent asked anyway because it did not
+    # know this was a pattern-following change rather than a novel design.
+    sent = tx.calls[0]["system"]
+    ok.append(("prompt: precedent beats preference stated",
+               "PRECEDENT BEATS PREFERENCE" in sent))
+    ok.append(("prompt: 'just do it like the existing ones' is the test",
+               "just do it like" in sent and "the existing ones" in sent))
+    ok.append(("prompt: YAML-shape question shown as an investigation",
+               "What YAML shape do existing" in sent))
+    ok.append(("prompt: key-comparison question shown as an investigation",
+               "Do existing sources support" in sent))
+    ok.append(("prompt: missing-file question shown as an investigation",
+               "How do existing sources handle a" in sent))
+    ok.append(("prompt: genuinely-new example kept blocking",
+               "Cobrix options" in sent))
+    ok.append(("prompt: consistency is a valid answer",
+               "Consistency with existing code is a valid answer" in sent))
+
+    precedent = {
+        "intent": "Mainframe source via Cobrix",
+        "acceptance_criteria": [{"text": "Cobrix reads mainframe data", "testable": True}],
+        # The four with precedent are now investigations...
+        "investigations": [
+            "What YAML shape do existing source types use?",
+            "Do existing sources support key-based comparison?",
+            "How do existing sources handle a missing required file?",
+            "Where do existing sources expect their config files to live?",
+        ],
+        # ...and only the genuinely novel one blocks.
+        "blocking_questions": ["Which Cobrix options must be configurable in the YAML?"],
+        "prerequisites": ["A sample EBCDIC data file and matching copybook"],
+        "contradictions": [], "context_gaps": [],
+    }
+    tx = MockTransport([json.dumps(precedent)])
+    r = run_ticket(tx, cfg, "PREC-1", "text", db, project="onetest")
+    ok.append(("only the novel question reaches the author", len(r["questions"]) == 1))
+    ok.append(("the novel question is the Cobrix one",
+               "Cobrix options" in r["questions"][0]))
+    ok.append(("pattern questions became investigations",
+               r["verdict"]["investigations"] == 4))
+    ok.append(("fixture still asked as a file, not a question",
+               len(r["prerequisites"]) == 1
+               and not any("sample" in q.lower() for q in r["questions"])))
+
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
         print(f"  [{'PASS' if passed else 'FAIL'}] {name.ljust(w)}")
@@ -1078,7 +1176,15 @@ def main() -> int:
         release = a.release
         if a.fetch:
             tx.progress(f"fetching {a.ticket} from Jira...")
+            cfg["_project"] = a.project
             text, ticket = fetch_ticket(cfg, a.ticket)
+            for att in ticket.get("attachments") or []:
+                if att.get("ok"):
+                    tx.progress(f"  attachment: {att['filename']} -> {att['path']}")
+                else:
+                    tx.progress(f"  attachment FAILED: {att.get('filename')}: {att.get('error')}")
+            if ticket.get("clarifications"):
+                tx.progress(f"  {len(ticket['clarifications'])} clarification(s) from the author")
             release = release or ticket.get("release")
             tx.progress(f"  {ticket['summary']}")
             tx.progress(f"  AC source: {ticket['acceptance_criteria_source']}")
