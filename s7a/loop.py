@@ -169,6 +169,24 @@ def questions_from(spec: dict) -> list[str]:
     return out
 
 
+def fetch_ticket(cfg: dict, ticket_id: str) -> tuple[str, dict]:
+    """
+    Jira -> (ticket text for the spec agent, structured ticket for the gates).
+
+    Imported lazily: the loop must still self-test on a machine with no Jira env
+    and no network at all.
+    """
+    import jira_fetch
+    from jira_client import from_env
+
+    jira_cfg = cfg.get("jira") or {}
+    client = from_env(workbench=Path(cfg.get("_workbench", Path(__file__).parent)))
+    ac_ids = jira_fetch.parse_ac_field_ids(
+        jira_cfg.get("ac_field_ids") or os.environ.get("JIRA_AC_FIELD_IDS"))
+    ticket = jira_fetch.fetch(ticket_id, client, ac_ids)
+    return jira_fetch.to_ticket_text(ticket), ticket
+
+
 def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                db: Path, project: str = "unknown", release: str | None = None,
                workspace_path: str | None = None, ticket: dict | None = None) -> dict:
@@ -375,6 +393,48 @@ def _self_test() -> int:
         ok.append(("harness error -> tooling_error", rows["BAD-1"]["failure_class"] == "tooling_error"))
         gates = {r["ticket_id"]: r["outcome"] for r in con.execute("SELECT * FROM gates")}
         ok.append(("gates written", gates.get("REAL-1") == "pass" and gates.get("VAGUE-1") == "fail"))
+
+    # WIRING. The bug this catches: an edit deleted fetch_ticket and every test
+    # above still passed, because nothing here calls it - it is only reachable
+    # via `--fetch`. A suite that goes green on a file with a missing function is
+    # not testing the thing that matters. So: assert the surface main() depends
+    # on actually exists, and exercise fetch_ticket against a fake client.
+    import inspect
+    for name in ("fetch_ticket", "run_ticket", "score_comprehension",
+                 "questions_from", "parse_json", "main"):
+        ok.append((f"wiring: {name} defined", callable(globals().get(name))))
+
+    src = inspect.getsource(main)
+    called = [n for n in ("fetch_ticket", "run_ticket") if f"{n}(" in src]
+    ok.append(("wiring: everything main() calls exists",
+               all(callable(globals().get(n)) for n in called)))
+
+    sys.modules.pop("jira_fetch", None)
+    if not callable(globals().get("fetch_ticket")):
+        ok.append(("fetch_ticket returns (text, ticket)", False))
+        ok.append(("fetch_ticket text feeds the spec agent", False))
+    else:
+        import jira_fetch as _jf
+        _real_fetch, _real_from_env = _jf.fetch, None
+        try:
+            import jira_client as _jc
+            _real_from_env = _jc.from_env
+            _jc.from_env = lambda **kw: object()
+            _jf.fetch = lambda key, client, ac_ids: {
+                "issue": key, "summary": "s", "description": "d" * 60,
+                "labels": ["docket-ready"], "acceptance_criteria": "ac",
+                "acceptance_criteria_source": "configured_field:cf_1",
+                "priority": "High", "issue_type": "Story", "release": "R1",
+                "reporter": "Jane",
+            }
+            text, tk = fetch_ticket({"jira": {}, "_workbench": "."}, "WIRE-1")
+            ok.append(("fetch_ticket returns (text, ticket)",
+                       isinstance(text, str) and tk["issue"] == "WIRE-1"))
+            ok.append(("fetch_ticket text feeds the spec agent", "Acceptance Criteria" in text))
+        finally:
+            _jf.fetch = _real_fetch
+            if _real_from_env:
+                _jc.from_env = _real_from_env
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
