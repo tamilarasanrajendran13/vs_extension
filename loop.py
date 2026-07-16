@@ -81,20 +81,10 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
     nothing in the log mentioned it. That is the exact bug this pipeline exists
     to prevent: a step that cannot run must announce it, never shrug.
     """
-    # The sibling layout tells us where the project is: agentic-development/
-    # contains docket/ and onetest/. Do not depend on the caller passing it.
+    project_path = project_path or resolve_project_path(cfg, project, workbench, say)
     if not project_path:
-        derived = Path(workbench).parent / project
-        if derived.exists():
-            project_path = derived
-            say(f"  project path not passed - derived {derived}")
-        else:
-            say(f"  NO PATTERNS: no project path, and no sibling '{project}' next to "
-                f"the workbench. The cartographer cannot read a repo it cannot find.")
-            return ""
-
-    if not Path(project_path).exists():
-        say(f"  NO PATTERNS: {project_path} does not exist.")
+        say("  NO PATTERNS: cannot find the project. The cartographer cannot read "
+            "a repo it cannot find.")
         return ""
 
     try:
@@ -189,6 +179,47 @@ def context_is_draft(workbench: Path, project: str) -> bool:
     return bool(text) and context_drafter.DRAFT_MARKER in text
 
 
+def resolve_project_path(cfg: dict, project: str, workbench: Path, say=None) -> Path | None:
+    """
+    Where is the project? ONE answer, used by everything.
+
+    This exists because I taught load_patterns to derive the path from the
+    sibling layout and forgot to teach run_lead - so the cartographer happily
+    read 24 modules and the lead reported "no repo map" on the same run. Two
+    functions, two answers, one of them wrong.
+
+    The sibling layout IS the answer:
+
+        agentic-development/docket/     <- workbench
+        agentic-development/onetest/    <- the project
+
+    so derive it rather than depending on every caller to pass it. Cached on cfg
+    so the derivation is announced once, not per agent.
+    """
+    if cfg.get("_resolved_project_path") is not None:
+        return cfg["_resolved_project_path"] or None
+
+    say = say or (lambda *_: None)
+    given = cfg.get("_project_path")
+    if given and Path(given).exists():
+        cfg["_resolved_project_path"] = Path(given)
+        return cfg["_resolved_project_path"]
+
+    derived = Path(workbench).parent / project
+    if derived.exists():
+        if given:
+            say(f"  project path '{given}' does not exist - using sibling {derived}")
+        else:
+            say(f"  project path not passed - derived {derived}")
+        cfg["_resolved_project_path"] = derived
+        return derived
+
+    say(f"  no sibling '{project}' next to the workbench at {Path(workbench).parent}, "
+        f"and no usable --project-path.")
+    cfg["_resolved_project_path"] = False
+    return None
+
+
 def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
              spec: dict, patterns: str, project: str, project_path: Path | None,
              workbench: Path, db: Path, say) -> dict | None:
@@ -211,16 +242,19 @@ def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
     import map_repo
 
     A = roster.load("lead", workbench)
-    repo_map: dict = {}
-    if project_path and Path(project_path).exists():
-        try:
-            repo_map, _ = map_repo.load_or_scan(
-                Path(project_path), workbench / "workspaces" / project / "repo_map.json")
-        except Exception as e:
-            say(f"  NO BLAST RADIUS: repo map unavailable ({e})")
-            return None
-    if not repo_map:
-        say("  NO BLAST RADIUS: no repo map. The lead cannot bound what it cannot see.")
+    project_path = project_path or resolve_project_path(cfg, project, workbench, say)
+    if not project_path:
+        say("  NO BLAST RADIUS: cannot find the project. The lead cannot bound "
+            "what it cannot see.")
+        return None
+    try:
+        repo_map, _ = map_repo.load_or_scan(
+            Path(project_path), workbench / "workspaces" / project / "repo_map.json")
+    except Exception as e:
+        say(f"  NO BLAST RADIUS: repo map unavailable ({e})")
+        return None
+    if not repo_map.get("modules"):
+        say(f"  NO BLAST RADIUS: no python modules under {project_path}.")
         return None
 
     # The ledger feeding forward. "billing/retry.py failed 3 of 5 runs" is
@@ -526,7 +560,8 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
         agent = spec_agent(wb)
         ctx = load_project_context(wb, project)
         draft = context_is_draft(wb, project)
-        patterns = load_patterns(cfg, tx, project, cfg.get("_project_path"), wb, say)
+        pp = resolve_project_path(cfg, project, wb, say)
+        patterns = load_patterns(cfg, tx, project, pp, wb, say)
         if ctx:
             system = f"{agent['prompt']}\n\n=== PROJECT CONTEXT: {project} ===\n{ctx}"
             say(f"project context: context/{project}.md ({len(ctx)} chars)"
@@ -649,7 +684,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
         say("")
 
         radius = run_lead(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
-                          project, cfg.get("_project_path"), wb, db, say)
+                          project, pp, wb, db, say)
 
         # Planner, developer, reviewer, security, QA, mutation, retro land here.
         ledger.end_run(run_id, "running", db=db)
@@ -687,7 +722,8 @@ def _self_test() -> int:
     for name in ("fetch_ticket", "run_ticket", "score_comprehension",
                  "questions_from", "parse_json", "main", "spec_agent",
                  "load_project_context", "context_is_draft", "load_patterns",
-                 "post_questions", "review_learnings", "run_lead"):
+                 "post_questions", "review_learnings", "run_lead",
+                 "resolve_project_path"):
         ok.append((f"wiring: {name} defined", callable(globals().get(name))))
 
     src = inspect.getsource(main)
@@ -1327,6 +1363,60 @@ def _self_test() -> int:
             "AND event_type='file_touch'")]
         ok.append(("every in-scope file is an event - the graph gets its edges",
                    len(touched) == 2))
+
+    # --- one resolver -------------------------------------------------------
+    # The bug: I taught load_patterns to derive the project path from the sibling
+    # layout and forgot run_lead. Same run, two answers - the cartographer read 24
+    # modules and the lead said "no repo map". Now there is exactly one derivation
+    # and every caller goes through it.
+    area = Path(tempfile.mkdtemp())
+    fwb = area / "docket"; (fwb / "agents").mkdir(parents=True)
+    for f in (Path(__file__).parent / "agents").glob("*.md"):
+        (fwb / "agents" / f.name).write_text(f.read_text())
+    sp = area / "resolveproj"; (sp / "pkg").mkdir(parents=True)
+    (sp / "pkg" / "m.py").write_text("class A: pass\n")
+
+    logs = []
+    got = resolve_project_path({}, "resolveproj", fwb, logs.append)
+    ok.append(("resolver derives from the sibling layout", got == sp))
+    ok.append(("derivation announced once", any("derived" in l for l in logs)))
+
+    logs = []
+    c = {}
+    resolve_project_path(c, "resolveproj", fwb, logs.append)
+    resolve_project_path(c, "resolveproj", fwb, logs.append)
+    ok.append(("resolution cached - announced once, not once per agent",
+               len([l for l in logs if "derived" in l]) == 1))
+
+    ok.append(("an explicit path wins when it exists",
+               resolve_project_path({"_project_path": str(sp)}, "x", fwb) == sp))
+
+    logs = []
+    got = resolve_project_path({"_project_path": str(area / "ghost")},
+                               "resolveproj", fwb, logs.append)
+    ok.append(("a bad explicit path falls back to the sibling, loudly",
+               got == sp and any("does not exist - using sibling" in l for l in logs)))
+
+    logs = []
+    ok.append(("nothing findable -> None, and it says where it looked",
+               resolve_project_path({}, "nosuch", fwb, logs.append) is None
+               and any("no sibling 'nosuch'" in l for l in logs)))
+
+    # The two callers must now agree. That is the whole point.
+    logs = []
+    lp = load_patterns({}, MockTransport(["not json"]), "resolveproj", None, fwb, logs.append)
+    logs2 = []
+    rl = run_lead(MockTransport([json.dumps({
+        "understanding": "x",
+        "may_touch": [{"path": "pkg/m.py", "kind": "modify", "why": "the module"}],
+        "must_not_touch": [], "risk": "low", "risk_why": "x",
+        "fan_out_plans": False, "unknowns": []})]),
+        {}, ledger.start_run("R-1", project="resolveproj", db=db), "R-1", "x",
+        {"intent": "x"}, "", "resolveproj", None, fwb, db, logs2.append)
+    ok.append(("the lead reaches the model instead of 'no repo map'", rl is not None))
+    ok.append(("cartographer and lead now resolve the SAME path",
+               not any("cannot find the project" in l for l in logs)
+               and not any("cannot find the project" in l for l in logs2)))
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
