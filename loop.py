@@ -313,7 +313,7 @@ def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
         if r["chars_read"]:
             say(f"  lead read {r['chars_read']} chars across {r['steps_used']} look(s)")
 
-        violations = br.verify(radius, repo_map)
+        violations = br.verify(radius, repo_map, project_path)
         if not violations:
             break
 
@@ -1350,10 +1350,10 @@ def _self_test() -> int:
                  "leadproj", proj, tmp, db, logs.append)
     ok.append(("hallucinated path caught and handed back", len(tx.calls) == 2))
     ok.append(("the violation is in the retry prompt",
-               "does not exist" in tx.calls[1]["user"]))
+               "no such file" in tx.calls[1]["user"]))
     ok.append(("second attempt accepted", r is not None))
     ok.append(("violations are shown to the human",
-               any("does not exist" in l for l in logs)))
+               any("no such file" in l for l in logs)))
 
     logs = []
     tx = MockTransport([done(GHOST), done(GHOST)])
