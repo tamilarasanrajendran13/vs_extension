@@ -344,10 +344,12 @@ def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
                    payload={"why": e.get("why"), "kind": e.get("kind"),
                             "in_scope": True}, db=db)
 
-    (workbench / "workspaces" / project / "tickets" / ticket_id).mkdir(
-        parents=True, exist_ok=True)
-    (workbench / "workspaces" / project / "tickets" / ticket_id
-     / "blast_radius.json").write_text(json.dumps(radius, indent=2))
+    import ticket_workspace as tws
+    rel = cfg.get("_release")
+    tws.write(workbench, rel, ticket_id, "plan", "blast-radius.json", radius,
+              ledger_mod=ledger, db=db, run_id=run_id, actor="lead")
+    tws.write(workbench, rel, ticket_id, "plan", "blast-radius.md", br.render(radius),
+              ledger_mod=ledger, db=db, run_id=run_id, actor="lead")
 
     say("")
     say(f"  {radius.get('understanding')}")
@@ -529,15 +531,20 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                db: Path, project: str = "unknown", release: str | None = None,
                workspace_path: str | None = None, ticket: dict | None = None) -> dict:
     say = tx.progress
+    wb_early = Path(cfg.get("_workbench", Path(__file__).parent))
     gates_cfg = cfg.get("gates") or {}
     threshold = (gates_cfg.get("comprehension") or {}).get("threshold", 1.0)
 
+    import ticket_workspace as tws
+
+    ws = tws.ensure(wb_early, release, ticket_id)
     run_id = ledger.start_run(
-        ticket_id, project=project, release=release, workspace_path=workspace_path,
+        ticket_id, project=project, release=release, workspace_path=str(ws),
         budget_usd=(cfg.get("governor") or {}).get("budget_usd_per_ticket"), db=db,
     )
     say(f"run {run_id}")
     say(f"project: {project}" + (f"  release: {release}" if release else ""))
+    say(f"workspace: {ws}")
 
     try:
         # Deterministic gates FIRST. No model, no tokens, no latency. There is no
@@ -545,6 +552,11 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
         # has no acceptance criteria.
         if ticket:
             import jira_fetch
+            tws.write(wb_early, release, ticket_id, "context", "ticket.json",
+                      {k: v for k, v in ticket.items() if not k.startswith("_")},
+                      ledger_mod=ledger, db=db, run_id=run_id, actor="jira")
+            tws.write(wb_early, release, ticket_id, "context", "issue-summary.txt",
+                      ticket_text, ledger_mod=ledger, db=db, run_id=run_id, actor="jira")
             checks = jira_fetch.preflight(
                 ticket, (cfg.get("jira") or {}).get("trigger_label"))
             failed = [c for c in checks if c["result"] == "fail"]
@@ -610,6 +622,10 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                        + ("+pat" if patterns else ""),
                    tokens_in=reply.get("tokens_in"), tokens_out=reply.get("tokens_out"),
                    db=db)
+
+        tws.write(wb_early, release, ticket_id, "context", "spec.json", spec,
+                  ledger_mod=ledger, db=db, run_id=run_id, actor="spec",
+                  event_id=spec_event_id)
 
         verdict = score_comprehension(spec)
         outcome = "pass" if verdict["score"] >= threshold else "fail"
@@ -693,16 +709,40 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                            {"text": f"Asked {ticket_id} author in a Jira comment",
                             "questions": qs, "prerequisites": prerequisites}, db=db)
 
+            tws.write(wb_early, release, ticket_id, "context", "comprehension.md",
+                      "\n".join([
+                          f"# Comprehension - {ticket_id}", "",
+                          f"**{verdict['score'] * 100:.0f}% - FAILED. Work did not start.**", "",
+                          "## Questions for the ticket author",
+                          *[f"{i}. {q}" for i, q in enumerate(qs, 1)], "",
+                          "## Files needed",
+                          *([f"- {p}" for p in prerequisites] or ["(none)"]), "",
+                          f"Posted to Jira: {posted}",
+                      ]), ledger_mod=ledger, db=db, run_id=run_id, actor="spec")
             ledger.end_run(run_id, "escalated", failure_class="ambiguous_ticket", db=db)
             return {"run_id": run_id, "outcome": outcome, "spec": spec,
                     "verdict": verdict, "questions": qs,
                     "prerequisites": prerequisites, "posted_to_jira": posted,
                     "context_gaps": context_gaps}
 
+        tws.write(wb_early, release, ticket_id, "context", "comprehension.md",
+                  "\n".join([
+                      f"# Comprehension - {ticket_id}", "",
+                      f"**{verdict['score'] * 100:.0f}% - {outcome.upper()}**", "",
+                      f"## Intent", spec.get("intent", ""), "",
+                      "## Checks",
+                      *[f"- [{c['result']}] {c['name']}" for c in verdict["checks"]], "",
+                      "## Investigations for the planner",
+                      *([f"- {i}" for i in investigations] or ["(none)"]), "",
+                      "## Prerequisites",
+                      *([f"- {p}" for p in prerequisites] or ["(none)"]),
+                  ]), ledger_mod=ledger, db=db, run_id=run_id, actor="spec")
+
         say("")
         say("  comprehension PASSED")
         say("")
 
+        cfg["_release"] = release
         radius = run_lead(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                           project, pp, wb, db, say)
 
@@ -1330,9 +1370,12 @@ def _self_test() -> int:
     r = run_lead(tx, cfg_lead, ledger.start_run("ONE-67", project="leadproj", db=db), "ONE-67", "add mainframe source",
                  {"intent": "x"}, "", "leadproj", proj, tmp, db, logs.append)
     ok.append(("lead declares a radius", r is not None and len(r["may_touch"]) == 2))
-    ok.append(("radius persisted for the planner",
-               (tmp / "workspaces" / "leadproj" / "tickets" / "ONE-67"
-                / "blast_radius.json").exists()))
+    ok.append(("radius persisted where a human would look for it",
+               (tmp / "development" / "unreleased" / "ONE-67" / "plan"
+                / "blast-radius.json").exists()))
+    ok.append(("...as markdown too, because a human reads prose",
+               "MUST NOT touch" in (tmp / "development" / "unreleased" / "ONE-67"
+                                    / "plan" / "blast-radius.md").read_text()))
     ok.append(("must_not_touch is populated - an empty one protects nothing",
                len(r["must_not_touch"]) == 2))
     ok.append(("the lead is given the repo index, so it can name real files",
@@ -1475,6 +1518,46 @@ def _self_test() -> int:
     ok.append(("cartographer and lead now resolve the SAME path",
                not any("cannot find the project" in l for l in logs)
                and not any("cannot find the project" in l for l in logs2)))
+
+    # --- the ticket workspace ------------------------------------------------
+    # "Are we storing these plans anywhere?" - the transparency question. Every
+    # artifact on disk, in order, browsable, and registered in the ledger by path
+    # and hash.
+    import ticket_workspace as tws
+
+    cfg_ws = dict(cfg, _workbench=str(tmp))
+    tk_ws = {"issue": "WS-1", "labels": ["docket-ready"], "description": "d" * 60,
+             "acceptance_criteria": "ac", "acceptance_criteria_source": "configured_field:cf_1",
+             "reporter": "Jane PO"}
+    tx = MockTransport([json.dumps(real)])
+    run_ticket(tx, cfg_ws, "WS-1", "the ticket text", db, project="onetest",
+               release="R2025.10", ticket=tk_ws)
+    d = tmp / "development" / "R2025.10" / "WS-1"
+    ok.append(("workspace created under development/<release>/<ticket>", d.is_dir()))
+    ok.append(("all five sections", all((d / x).is_dir() for x in
+               ("context", "plan", "implementation", "test", "evidence"))))
+    ok.append(("the ticket as fetched is kept", (d / "context" / "ticket.json").exists()))
+    ok.append(("what the spec agent read is kept", (d / "context" / "spec.json").exists()))
+    ok.append(("the gate verdict is readable prose",
+               "Comprehension" in (d / "context" / "comprehension.md").read_text()))
+    ok.append(("investigations recorded for the planner",
+               "Investigations" in (d / "context" / "comprehension.md").read_text()))
+
+    arts = ledger.artifacts("WS-1", db=db)
+    ok.append(("every artifact registered in the ledger", len(arts) >= 3))
+    ok.append(("registered with a hash - 'was this edited?' is answerable",
+               all(len(a["sha256"]) == 64 for a in arts)))
+    ok.append(("and with who wrote it", {a["actor"] for a in arts} == {"jira", "spec"}))
+
+    # A run that dies at the gate must still leave its record.
+    tx = MockTransport([json.dumps(vague)])
+    run_ticket(tx, cfg_ws, "WS-2", "make it fast", db, project="onetest",
+               release="R2025.10", ticket=dict(tk_ws, issue="WS-2"))
+    d2 = tmp / "development" / "R2025.10" / "WS-2"
+    ok.append(("an escalated run still leaves its workspace", d2.is_dir()))
+    ok.append(("...including WHY it stopped",
+               "Questions for the ticket author" in
+               (d2 / "context" / "comprehension.md").read_text()))
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
