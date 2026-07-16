@@ -36,11 +36,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import context_drafter
 import ledger
+import roster
 import transport as transport_mod
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 
-SPEC_PROMPT_VERSION = "spec@7"
+# The spec agent lives in agents/spec.md, not here. Every real ticket has taught
+# it something - that "testable" does not mean numeric, that precedent beats
+# preference, that a missing fixture is a prerequisite not a failure. None of
+# those should have needed a .py file open.
+
+
+def spec_agent(workbench: Path) -> dict:
+    return roster.load("spec", workbench)
+
 
 NO_CONTEXT_NOTICE = """
 !! You have NOT been told what this project is. You have not seen the code.
@@ -55,14 +64,107 @@ assumption about the project is wrong. Ask "does this codebase handle X?", never
 """
 
 
+def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
+                  workbench: Path, say) -> str:
+    """
+    How this codebase is extended, read FROM the codebase by an agent.
+
+      map_repo.py    tools: list, grep, read, plus one index from a tree walk and
+                     `import ast`. Not judgement - `ls` with a parser.
+      cartographer   an agent that uses them until it knows, then stops.
+
+    Cached on the tree hash: a codebase's shape changes far more slowly than
+    tickets arrive, so this runs when the code changes, not once per ticket.
+
+    EVERY early return here says why. An earlier version returned "" silently on
+    a missing path or a failed import, so the cartographer simply never ran and
+    nothing in the log mentioned it. That is the exact bug this pipeline exists
+    to prevent: a step that cannot run must announce it, never shrug.
+    """
+    # The sibling layout tells us where the project is: agentic-development/
+    # contains docket/ and onetest/. Do not depend on the caller passing it.
+    if not project_path:
+        derived = Path(workbench).parent / project
+        if derived.exists():
+            project_path = derived
+            say(f"  project path not passed - derived {derived}")
+        else:
+            say(f"  NO PATTERNS: no project path, and no sibling '{project}' next to "
+                f"the workbench. The cartographer cannot read a repo it cannot find.")
+            return ""
+
+    if not Path(project_path).exists():
+        say(f"  NO PATTERNS: {project_path} does not exist.")
+        return ""
+
+    try:
+        import map_repo, cartographer
+    except ImportError as e:
+        say(f"  NO PATTERNS: could not import the map ({e}). "
+            f"Are map_repo.py and cartographer.py in scripts/?")
+        return ""
+
+    cache = workbench / "workspaces" / project / "repo_map.json"
+    try:
+        m, was_cached = map_repo.load_or_scan(Path(project_path), cache)
+    except Exception as e:
+        say(f"  NO PATTERNS: repo scan failed: {e}")
+        return ""
+
+    if not m["stats"]["modules"]:
+        say(f"  NO PATTERNS: no python modules found under {project_path}. "
+            f"Wrong folder, or a language the AST walker does not read yet.")
+        return ""
+
+    th = m["tree_hash"]
+    if not cartographer.is_stale(workbench, project, th):
+        p = cartographer.load(workbench, project)
+        eps = p.get("extension_points") or []
+        say(f"  patterns: cached - {len(eps)} extension point(s), "
+            f"{m['stats']['modules']} modules, tree {th[:8]}")
+        say(f"    (delete workspaces/{project}/patterns.json to re-explore)")
+        return cartographer.render(p)
+
+    index = map_repo.render_index(m)
+    say(f"  repo changed - exploring ({m['stats']['modules']} modules indexed, "
+        f"{len(index)} chars)")
+
+    # Tools, not a fixed script. The agent decides what to look at and when to
+    # stop. It chooses; the bounds are ours.
+    pp = Path(project_path)
+    tools = {
+        "list": lambda g: map_repo.list_files(pp, g),
+        "grep": lambda pat, g: map_repo.grep_files(pp, pat, g),
+        "read": lambda paths: map_repo.render_files(map_repo.read_files(pp, paths)),
+    }
+
+    try:
+        ctx = load_project_context(workbench, project)
+        p = cartographer.explore(tx, tools, index, th, workbench, project,
+                                 context=ctx, say=say)
+    except Exception as e:
+        say(f"  NO PATTERNS: cartographer failed: {e}")
+        return ""
+
+    eps = p.get("extension_points") or []
+    say(f"  patterns: {len(eps)} extension point(s) after {p.get('steps_used')} look(s), "
+        f"{p.get('chars_read', 0)} chars read")
+    for ep in eps:
+        say(f"    - {ep.get('what')} via {ep.get('mechanism')} [{ep.get('confidence')}]")
+    if not eps:
+        say("    none identified - the planner will have to look for itself")
+    say(f"    written to workspaces/{project}/patterns.json")
+    return cartographer.render(p)
+
+
 def load_project_context(workbench: Path, project: str) -> str | None:
     """
     context/<project>.md - what this codebase IS, and what it is NOT.
 
-    This is the tacit knowledge map_repo.py can never recover: you can read every
-    line of a repo and still not know what it is FOR. Without it, agents invent a
-    plausible mental model and ask well-formed questions about a system that
-    does not exist.
+    Tacit knowledge no amount of code reading recovers: you can read every line of
+    a repo and still not know what it is FOR. Without it, agents invent a
+    plausible mental model and ask well-formed questions about a system that does
+    not exist.
     """
     f = Path(workbench) / "context" / f"{project}.md"
     if f.exists():
@@ -81,173 +183,6 @@ def context_is_draft(workbench: Path, project: str) -> bool:
     """
     text = load_project_context(workbench, project)
     return bool(text) and context_drafter.DRAFT_MARKER in text
-
-
-SPEC_PROMPT = """You are the spec agent in an automated delivery pipeline.
-
-You will receive a ticket. Your job is NOT to solve it, and NOT to demand that
-the ticket contain the answers. Your job is exactly one question:
-
-    Can a competent developer START work on this, or must they go ask a human
-    first?
-
-A good ticket states a REQUIREMENT. It does not list file paths, module names, or
-implementation details - those come from reading the code, which is the planner's
-job, not the ticket author's. Do not penalise a ticket for being a ticket.
-
-Return ONLY a JSON object. No prose, no markdown fences.
-
-{
-  "intent": "one sentence: what this ticket actually asks for",
-  "acceptance_criteria": [
-    {"text": "...", "testable": true|false, "why_not": "if not testable, why"}
-  ],
-  "blocking_questions": ["a DECISION only a human can make"],
-  "prerequisites": ["a FILE or ARTIFACT someone must supply"],
-  "investigations": ["something the planner should look up in the codebase"],
-  "contradictions": ["two requirements that cannot both hold"],
-  "context_gaps": [
-    {"claim": "a line that belongs in the project context file, permanently",
-     "evidence": "the author's words that justify it"}
-  ]
-}
-
-THREE KINDS OF GAP. Sorting them correctly is the entire job:
-
-  blocking_questions  = the answer does not exist yet, ANYWHERE - not in the
-                        code, not in precedent, not in anyone's head but the
-                        author's. A decision nobody has made, about something
-                        with NO existing equivalent in this codebase.
-                        e.g. "What is the acceptable data loss window?"
-                             "Which Cobrix options must be configurable?" (nothing
-                              in this codebase has ever had Cobrix options)
-
-                        PRECEDENT BEATS PREFERENCE. Before you mark anything
-                        blocking, ask: does this project ALREADY do something
-                        like this? Almost every feature ticket extends a pattern
-                        rather than inventing one, and in a mature codebase the
-                        default answer to "how should X behave?" is "the same way
-                        the existing Xs behave".
-
-                        If a precedent could plausibly exist, it is an
-                        INVESTIGATION, not a blocking question:
-                          "What YAML shape should the new source use?"
-                              -> other source types have a YAML shape. Read one.
-                              -> INVESTIGATION: "What YAML shape do existing
-                                 source types use?"
-                          "Should it support key-based comparison?"
-                              -> if other sources do, this one does.
-                              -> INVESTIGATION: "Do existing sources support
-                                 key-based comparison?"
-                          "What happens when a required file is missing?"
-                              -> the framework already handles missing files.
-                              -> INVESTIGATION: "How do existing sources handle a
-                                 missing required file?"
-
-                        You have not seen the code, so you cannot confirm a
-                        precedent exists - and you do not need to. Phrase it as
-                        an investigation and let the planner look. If no precedent
-                        turns out to exist, the planner will raise it then, with
-                        evidence. Asking a human to specify something the codebase
-                        already decided is the fastest way to make this gate
-                        ignored.
-
-  prerequisites       = nobody ANSWERS this - someone SUPPLIES it. A file, a
-                        fixture, a driver, a credential. The response is an
-                        attachment or an artifact, not a sentence.
-                        e.g. "A sample copybook (.cpy) and matching data file"
-                             "The Oracle JDBC driver jar"
-                        If you catch yourself writing "is there a sample X?" -
-                        that is a prerequisite, not a question. Ask for the file.
-
-  investigations      = the answer EXISTS, in the code, the schema, the config,
-                        or the repo. A developer would find it by looking. This
-                        is normal work, not a blocker.
-                        e.g. "Which module currently parses the copybooks?"
-                             "Where is the existing SFTP config?"
-                             "What does the current validation do on mismatch?"
-
-Rules:
-- Default to investigations, hard. Only call something blocking when you are
-  confident that NO precedent could exist and a genuine choice must be made. A
-  false blocker wastes a human's time and trains people to ignore this gate,
-  which costs more than the tickets it catches.
-- THE TEST: "if I asked a developer on this team, would they say 'just do it like
-  the existing ones'?" If yes, it is an investigation. If they would have to go
-  ask someone or make a call, it is blocking.
-- Consistency with existing code is a valid answer and usually the RIGHT one.
-  A ticket that extends a pattern does not need the pattern re-specified.
-TESTABLE means: is there an OBSERVABLE OUTCOME you could assert on, such that a
-broken implementation would fail the test? That is the entire question.
-
-It does NOT mean "has a number in it". Do not demand a numeric threshold. Most
-correctness criteria have no number and are perfectly testable:
-
-  testable    "Copybook parsing works correctly"
-              -> parse the fixture, assert the fields match the copybook layout.
-                 A broken parser fails. No number required.
-  testable    "No data corruption during transfer"
-              -> compare source and target field by field. Corruption fails it.
-  testable    "Connects to Oracle successfully"
-              -> attempt the connection, assert it succeeds.
-
-  NOT         "The system should be fast"
-              -> fails against WHAT? There is no observable outcome to assert on.
-                 This needs a target before anyone can write a test.
-  NOT         "The code should be maintainable"
-              -> no assertion exists.
-
-Two rules that matter more than your instincts:
-
-  1. If the PROJECT CONTEXT defines what testable means for this codebase, that
-     definition WINS. A criterion expressible in the project's own test mechanism
-     is testable, full stop.
-  2. A missing fixture does not make a criterion untestable. "We do not have a
-     sample copybook yet" is a PREREQUISITE, not a testability failure. The
-     criterion is testable; the fixture is missing. Say so in prerequisites.
-
-The author usually knows their framework better than you do. If a criterion
-describes a concrete outcome and you can imagine an assertion for it - even one
-you cannot write yet - it is testable. Marking a real criterion untestable sends
-a pointless question to a human and trains them to ignore this gate.
-- blocking_questions must be ANSWERABLE AS WRITTEN by the ticket author. Not
-  "the retry policy is unclear" but "should retries use exponential backoff or a
-  fixed 5s interval?"
-- Empty blocking_questions is the CORRECT answer for a clear ticket. Do not pad.
-- If CLARIFICATIONS appear below the ticket, they are answers a human already
-  gave. Treat them as decided. Never re-ask a question they answered.
-
-READING "N/A" - three different things wear the same two letters:
-
-  "N/A - we do not support Polars anywhere in this framework"
-      A REASONED N/A. The question was wrong, and now you know why. Drop it from
-      blocking_questions. AND add a context_gap: this fact belongs in the project
-      context file permanently, so no future ticket ever asks it again. The
-      reason is worth more than the answer would have been.
-
-  "N/A" (bare, no reason)
-      NOT AN ANSWER. A blocking question is by definition a decision that must be
-      made; "N/A" with no reason means either the question was wrong or someone
-      is waving it through, and you cannot tell which. KEEP it in
-      blocking_questions, rephrased to ask why:
-          "You answered N/A to <question> - why does it not apply?"
-      Proceeding here would mean guessing, which is the one thing this gate
-      exists to prevent.
-
-  "N/A" on a PREREQUISITE ("no sample copybook exists")
-      That is a real answer - the artifact does not exist. Keep the prerequisite;
-      someone must still produce one. Do not silently drop it.
-
-context_gaps - only from a REASONED N/A, or an answer that states a durable fact
-about the project rather than a decision about this ticket. A gap means: I asked
-something I should never have needed to ask, because this is a permanent property
-of the codebase. "Use exponential backoff for THIS ticket" is a decision, not a
-gap. "This framework has no streaming support at all" is a gap. When unsure,
-leave it out - a wrong line in the context file poisons every future ticket.
-- Do not invent file paths. You have not seen the code.
-- Ground every investigation in the PROJECT CONTEXT above. If the context says
-  this is not an X, never ask about "the existing X". An investigation built on a
-  wrong premise sends the planner hunting for something that was never there."""
 
 
 def parse_json(text: str) -> dict:
@@ -358,7 +293,8 @@ def fetch_ticket(cfg: dict, ticket_id: str) -> tuple[str, dict]:
     # "is there a sample copybook?" - they attach one. Pull them down so the gate
     # can see the file exists rather than take someone's word for it.
     wb = Path(cfg.get("_workbench", Path(__file__).parent))
-    dest = wb / "workspaces" / cfg.get("_project", "unknown") / "tickets" / ticket_id / "attachments"
+    dest = (wb / "workspaces" / cfg.get("_project", "unknown") / "tickets"
+            / ticket_id / "attachments")
     try:
         atts = client.get_attachments(ticket_id)
         pulled = clarify.download_all(client, atts, dest) if atts else []
@@ -456,10 +392,12 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                    {"text": "models resolved", "resolved": resolved}, db=db)
 
         wb = Path(cfg.get("_workbench", "."))
+        agent = spec_agent(wb)
         ctx = load_project_context(wb, project)
         draft = context_is_draft(wb, project)
+        patterns = load_patterns(cfg, tx, project, cfg.get("_project_path"), wb, say)
         if ctx:
-            system = f"{SPEC_PROMPT}\n\n=== PROJECT CONTEXT: {project} ===\n{ctx}"
+            system = f"{agent['prompt']}\n\n=== PROJECT CONTEXT: {project} ===\n{ctx}"
             say(f"project context: context/{project}.md ({len(ctx)} chars)"
                 + ("   [DRAFT - unreviewed]" if draft else ""))
             if draft:
@@ -467,19 +405,23 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                 say("  know design intent. Read it, answer its 'Questions for you'")
                 say(f"  section, then delete the '{context_drafter.DRAFT_MARKER}' line.")
         else:
-            system = f"{SPEC_PROMPT}\n{NO_CONTEXT_NOTICE}"
+            system = f"{agent['prompt']}\n{NO_CONTEXT_NOTICE}"
             say(f"  NO context/{project}.md - the agent will guess what this project is.")
             say(f"  Write one (see context/_template.md). It is the cheapest accuracy you will buy.")
 
+        if patterns:
+            system += f"\n\n{patterns}"
+
         say("spec agent reading ticket...")
-        reply = tx.chat("worker", system, f"TICKET {ticket_id}\n\n{ticket_text}")
+        reply = tx.chat(agent["model"], system, f"TICKET {ticket_id}\n\n{ticket_text}")
         spec = parse_json(reply["text"])
 
         spec_event_id = ledger.log(run_id, ticket_id, "spec", "message",
                    {"text": spec.get("intent"), "spec": spec},
                    model=reply.get("model"),
-                   prompt_version=SPEC_PROMPT_VERSION + (
-                       "+draftctx" if draft else "+ctx" if ctx else "+noctx"),
+                   prompt_version=roster.stamp(agent) + (
+                       "+draftctx" if draft else "+ctx" if ctx else "+noctx")
+                       + ("+pat" if patterns else ""),
                    tokens_in=reply.get("tokens_in"), tokens_out=reply.get("tokens_out"),
                    db=db)
 
@@ -594,16 +536,50 @@ def _self_test() -> int:
     import tempfile
     from transport import MockTransport
 
+    ok = []
+
+    # WIRING. The bug this catches: an edit deleted fetch_ticket and every test
+    # above still passed, because nothing here calls it - it is only reachable
+    # via `--fetch`. A suite that goes green on a file with a missing function is
+    # not testing the thing that matters. So: assert the surface main() depends
+    # on actually exists, and exercise fetch_ticket against a fake client.
+    import inspect
+    for name in ("fetch_ticket", "run_ticket", "score_comprehension",
+                 "questions_from", "parse_json", "main", "spec_agent",
+                 "load_project_context", "context_is_draft", "load_patterns",
+                 "post_questions", "review_learnings"):
+        ok.append((f"wiring: {name} defined", callable(globals().get(name))))
+
+    src = inspect.getsource(main)
+    called = [n for n in ("fetch_ticket", "run_ticket") if f"{n}(" in src]
+    ok.append(("wiring: everything main() calls exists",
+               all(callable(globals().get(n)) for n in called)))
+
+
+    missing = [n for n, present in ok if not present]
+    if missing:
+        print("\n  WIRING BROKEN - not running the rest, it would all cascade:\n")
+        for name, present in ok:
+            print(f"  [{'PASS' if present else 'FAIL'}] {name}")
+        print(f"\n  {len(ok) - len(missing)}/{len(ok)} passed  FAILED: {missing}")
+        return 1
+
     tmp = Path(tempfile.mkdtemp())
     db = tmp / "ledger.db"
     ledger.init(db)
     cfg = {"gates": {"comprehension": {"threshold": 1.0}},
            "governor": {"budget_usd_per_ticket": 2.5}, "_workbench": str(tmp)}
-    ok = []
 
     # Project context: the fix for "is there an existing ingestion pipeline?" -
     # a well-formed question about a system that does not exist, asked because
     # the agent was given no idea what the project was.
+    # The REAL agent files. A test against an inlined prompt would pass while the
+    # shipped file was broken - the exact bug this move exists to kill.
+    real = Path(__file__).parent / "agents"
+    (tmp / "agents").mkdir()
+    for f in real.glob("*.md"):
+        (tmp / "agents" / f.name).write_text(f.read_text())
+
     (tmp / "context").mkdir()
     (tmp / "context" / "onetest.md").write_text(
         "# onetest\n## What it is\nA PySpark data validation framework.\n"
@@ -688,21 +664,6 @@ def _self_test() -> int:
         ok.append(("harness error -> tooling_error", rows["BAD-1"]["failure_class"] == "tooling_error"))
         gates = {r["ticket_id"]: r["outcome"] for r in con.execute("SELECT * FROM gates")}
         ok.append(("gates written", gates.get("REAL-1") == "pass" and gates.get("VAGUE-1") == "fail"))
-
-    # WIRING. The bug this catches: an edit deleted fetch_ticket and every test
-    # above still passed, because nothing here calls it - it is only reachable
-    # via `--fetch`. A suite that goes green on a file with a missing function is
-    # not testing the thing that matters. So: assert the surface main() depends
-    # on actually exists, and exercise fetch_ticket against a fake client.
-    import inspect
-    for name in ("fetch_ticket", "run_ticket", "score_comprehension",
-                 "questions_from", "parse_json", "main"):
-        ok.append((f"wiring: {name} defined", callable(globals().get(name))))
-
-    src = inspect.getsource(main)
-    called = [n for n in ("fetch_ticket", "run_ticket") if f"{n}(" in src]
-    ok.append(("wiring: everything main() calls exists",
-               all(callable(globals().get(n)) for n in called)))
 
     sys.modules.pop("jira_fetch", None)
     if not callable(globals().get("fetch_ticket")):
@@ -1000,7 +961,17 @@ def _self_test() -> int:
     # THE regression, from a real run. Four of five "blocking questions" had
     # existing answers in the codebase - the agent asked anyway because it did not
     # know this was a pattern-following change rather than a novel design.
+    A = spec_agent(tmp)
+    ok.append(("spec prompt loads from agents/spec.md", len(A["prompt"]) > 2000))
+    ok.append(("agent file declares its model", A["model"] == "worker"))
+    ok.append(("agent file declares its version", A["version"] == 8))
+    ok.append(("ledger stamp is version:hash - an edit without a version bump "
+               "is still distinguishable",
+               roster.stamp(A).startswith("spec@8:") and len(roster.stamp(A)) > 8))
+
     sent = tx.calls[0]["system"]
+    ok.append(("the model gets the FILE's prompt, verbatim",
+               sent.startswith(A["prompt"][:200])))
     ok.append(("prompt: precedent beats preference stated",
                "PRECEDENT BEATS PREFERENCE" in sent))
     ok.append(("prompt: 'just do it like the existing ones' is the test",
@@ -1041,6 +1012,42 @@ def _self_test() -> int:
     ok.append(("fixture still asked as a file, not a question",
                len(r["prerequisites"]) == 1
                and not any("sample" in q.lower() for q in r["questions"])))
+
+    # --- every silent return is now loud ------------------------------------
+    # The bug: load_patterns returned "" on a missing path or a failed import,
+    # so the cartographer never ran and the log said nothing at all.
+    logs = []
+    r = load_patterns({}, MockTransport([]), "ghostproject", None, tmp, logs.append)
+    ok.append(("no project path -> says so, does not shrug",
+               r == "" and any("NO PATTERNS" in l for l in logs)))
+    ok.append(("and it names what it looked for",
+               any("no sibling 'ghostproject'" in l for l in logs)))
+
+    logs = []
+    load_patterns({}, MockTransport([]), "x", tmp / "nope", tmp, logs.append)
+    ok.append(("missing path -> says which path",
+               any("NO PATTERNS" in l and "nope" in l for l in logs)))
+
+    # The sibling layout is the source of truth for where a project is:
+    #   agentic-development/docket/     <- workbench
+    #   agentic-development/onetest/    <- sibling
+    area = Path(tempfile.mkdtemp())
+    fake_wb = area / "docket"; fake_wb.mkdir()
+    sib = area / "siblingproj"
+    (sib / "pkg").mkdir(parents=True)
+    (sib / "pkg" / "m.py").write_text("class A: pass\n")
+    logs = []
+    load_patterns({}, MockTransport(["not json"]), "siblingproj", None, fake_wb, logs.append)
+    ok.append(("project path derived from the sibling layout when not passed",
+               any("derived" in l and "siblingproj" in l for l in logs)))
+    ok.append(("derivation is announced, not silent",
+               any("not passed - derived" in l for l in logs)))
+
+    empty = tmp / "emptyproj"; empty.mkdir()
+    logs = []
+    r = load_patterns({}, MockTransport([]), "emptyproj", empty, tmp, logs.append)
+    ok.append(("no python modules -> says so rather than exploring nothing",
+               r == "" and any("no python modules found" in l for l in logs)))
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
@@ -1177,6 +1184,7 @@ def main() -> int:
         if a.fetch:
             tx.progress(f"fetching {a.ticket} from Jira...")
             cfg["_project"] = a.project
+            cfg["_project_path"] = a.project_path
             text, ticket = fetch_ticket(cfg, a.ticket)
             for att in ticket.get("attachments") or []:
                 if att.get("ok"):
