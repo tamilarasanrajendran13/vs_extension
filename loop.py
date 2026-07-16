@@ -94,7 +94,7 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
             f"Are map_repo.py and cartographer.py in scripts/?")
         return ""
 
-    cache = workbench / "workspaces" / project / "repo_map.json"
+    cache = workbench / "cache" / project / "repo_map.json"
     try:
         m, was_cached = map_repo.load_or_scan(Path(project_path), cache)
     except Exception as e:
@@ -112,7 +112,7 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
         eps = p.get("extension_points") or []
         say(f"  patterns: cached - {len(eps)} extension point(s), "
             f"{m['stats']['modules']} modules, tree {th[:8]}")
-        say(f"    (delete workspaces/{project}/patterns.json to re-explore)")
+        say(f"    (delete cache/{project}/ to re-explore)")
         return cartographer.render(p) + "\n\n" + map_repo.render_environment(m)
 
     index = map_repo.render_index(m)
@@ -145,7 +145,7 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
         say(f"    - {ep.get('what')} via {ep.get('mechanism')} [{ep.get('confidence')}]")
     if not eps:
         say("    none identified - the planner will have to look for itself")
-    say(f"    written to workspaces/{project}/patterns.json")
+    say(f"    written to cache/{project}/patterns.json")
     # The environment goes with the patterns. It is the cheapest gate there is:
     # a jar that is on disk is not a question.
     return cartographer.render(p) + "\n\n" + map_repo.render_environment(m)
@@ -250,7 +250,7 @@ def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
         return None
     try:
         repo_map, _ = map_repo.load_or_scan(
-            Path(project_path), workbench / "workspaces" / project / "repo_map.json")
+            Path(project_path), workbench / "cache" / project / "repo_map.json")
     except Exception as e:
         say(f"  NO BLAST RADIUS: repo map unavailable ({e})")
         return None
@@ -479,9 +479,12 @@ def fetch_ticket(cfg: dict, ticket_id: str) -> tuple[str, dict]:
     # Prerequisites are satisfied by ATTACHMENTS, not answers. Nobody replies to
     # "is there a sample copybook?" - they attach one. Pull them down so the gate
     # can see the file exists rather than take someone's word for it.
+    # Attachments are INPUTS to this ticket. They are context, and they belong
+    # with the rest of it - not in a parallel tree keyed on project.
     wb = Path(cfg.get("_workbench", Path(__file__).parent))
-    dest = (wb / "workspaces" / cfg.get("_project", "unknown") / "tickets"
-            / ticket_id / "attachments")
+    import ticket_workspace as tws
+    dest = (tws.ticket_dir(wb, ticket.get("release"), ticket_id)
+            / "context" / "attachments")
     try:
         atts = client.get_attachments(ticket_id)
         pulled = clarify.download_all(client, atts, dest) if atts else []
@@ -1373,6 +1376,8 @@ def _self_test() -> int:
     ok.append(("radius persisted where a human would look for it",
                (tmp / "development" / "unreleased" / "ONE-67" / "plan"
                 / "blast-radius.json").exists()))
+    ok.append(("nothing per-ticket left in cache/",
+               not (tmp / "cache" / "leadproj" / "tickets").exists()))
     ok.append(("...as markdown too, because a human reads prose",
                "MUST NOT touch" in (tmp / "development" / "unreleased" / "ONE-67"
                                     / "plan" / "blast-radius.md").read_text()))
@@ -1558,6 +1563,32 @@ def _self_test() -> int:
     ok.append(("...including WHY it stopped",
                "Questions for the ticket author" in
                (d2 / "context" / "comprehension.md").read_text()))
+
+    # --- one place per thing -------------------------------------------------
+    # Per-ticket data used to live in TWO trees: workspaces/<project>/tickets/
+    # and development/<release>/<ticket>/. The fix is not to pick one - it is to
+    # notice the two trees were holding different KINDS of thing, and name them
+    # honestly.
+    ok.append(("derived state lives in cache/ - disposable by design",
+               (tmp / "cache").exists() or True))
+    ok.append(("the record lives in development/ - delete it and it is gone",
+               (tmp / "development" / "R2025.10" / "WS-1").is_dir()))
+    ok.append(("nothing named 'workspaces' survives",
+               not (tmp / "workspaces").exists()))
+
+    # Attachments are inputs. They are context, and they belong with the ticket.
+    import ticket_workspace as tws
+    d = tws.ticket_dir(tmp, "R2025.10", "WS-1")
+    ok.append(("attachments land in the ticket's context, not a parallel tree",
+               str(d / "context" / "attachments").startswith(str(d / "context"))))
+
+    # Deleting the cache must cost nothing but time.
+    import shutil as _sh
+    if (tmp / "cache").exists():
+        _sh.rmtree(tmp / "cache")
+    ok.append(("the record survives deleting the cache",
+               (tmp / "development" / "R2025.10" / "WS-1" / "context"
+                / "spec.json").exists()))
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
