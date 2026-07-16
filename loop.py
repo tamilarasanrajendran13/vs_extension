@@ -189,6 +189,133 @@ def context_is_draft(workbench: Path, project: str) -> bool:
     return bool(text) and context_drafter.DRAFT_MARKER in text
 
 
+def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
+             spec: dict, patterns: str, project: str, project_path: Path | None,
+             workbench: Path, db: Path, say) -> dict | None:
+    """
+    The lead declares the blast radius, and the code checks it.
+
+    It does NOT orchestrate. Sequencing is a state machine - free, fast, and
+    incapable of rationalising. An agent that both decides the next step and
+    judges its own decision is grading its own homework, and it needs the whole
+    run in context to do it, which is the exact thing this design avoids.
+
+    The lead decides SCOPE. Then it gets out of the way.
+
+    Its declaration is verified against the repo map before anyone believes it:
+    every "modify" path must exist. An agent naming files it has not seen is the
+    oldest failure in this pipeline, and here it is caught by a dict lookup rather
+    than three agents later.
+    """
+    import blast_radius as br
+    import map_repo
+
+    A = roster.load("lead", workbench)
+    repo_map: dict = {}
+    if project_path and Path(project_path).exists():
+        try:
+            repo_map, _ = map_repo.load_or_scan(
+                Path(project_path), workbench / "workspaces" / project / "repo_map.json")
+        except Exception as e:
+            say(f"  NO BLAST RADIUS: repo map unavailable ({e})")
+            return None
+    if not repo_map:
+        say("  NO BLAST RADIUS: no repo map. The lead cannot bound what it cannot see.")
+        return None
+
+    # The ledger feeding forward. "billing/retry.py failed 3 of 5 runs" is
+    # something only past runs know, and it is exactly what should make a ticket
+    # risky.
+    hot = []
+    try:
+        with ledger.connect(db) as con:
+            hot = [dict(r) for r in con.execute(
+                "SELECT file, runs_touching, runs_failed, escaped_defects "
+                "FROM v_danger_zones WHERE project = ? LIMIT 10", (project,))]
+    except Exception:
+        pass
+
+    parts = [f"TICKET {ticket_id}\n\n{ticket_text}",
+             f"=== THE SPEC AGENT'S READING ===\n{json.dumps(spec, indent=1)}"]
+    if patterns:
+        parts.append(patterns)
+    parts.append(map_repo.render_index(repo_map))
+    if hot:
+        parts.append("=== DANGER ZONES (from past runs of this pipeline) ===\n"
+                     + "\n".join(f"  {h['file']}: {h['runs_failed']} of "
+                                 f"{h['runs_touching']} runs failed, "
+                                 f"{h['escaped_defects']} escaped defect(s)" for h in hot))
+    user = "\n\n".join(parts)
+
+    radius = None
+    for attempt in (1, 2):
+        say(f"lead declaring the blast radius..." if attempt == 1
+            else "  lead retrying with the violations...")
+        try:
+            reply = tx.chat(A["model"], A["prompt"], user)
+            radius = parse_json(reply["text"])
+        except ValueError as e:
+            say(f"  lead did not return JSON: {e}")
+            return None
+
+        violations = br.verify(radius, repo_map)
+        if not violations:
+            break
+
+        # Hand the violations back rather than accepting a broken boundary. A
+        # radius naming files that do not exist is worse than none: it looks
+        # authoritative and it is fiction.
+        say(f"  {len(violations)} violation(s) in the radius:")
+        for v in violations:
+            say(f"    {v['path'] or '(radius)'}: {v['problem']}")
+        if attempt == 2:
+            say("  lead could not produce a valid radius. Not proceeding on a "
+                "boundary that names files that do not exist.")
+            ledger.log(run_id, ticket_id, "lead", "escalation",
+                       {"text": "blast radius failed verification twice",
+                        "violations": violations}, db=db)
+            return None
+        user += ("\n\n=== YOUR RADIUS FAILED VERIFICATION ===\n"
+                 + "\n".join(f"  {v['path'] or '(radius)'}: {v['problem']}" for v in violations)
+                 + "\n\nEvery path must come from the index above, exactly as "
+                   "written, or be a new file marked 'create'. Try again.")
+
+    ledger.log(run_id, ticket_id, "lead", "plan",
+               {"text": radius.get("understanding"), "radius": radius},
+               model=reply.get("model"), prompt_version=roster.stamp(A),
+               tokens_in=reply.get("tokens_in"), tokens_out=reply.get("tokens_out"),
+               db=db)
+    for e in (radius.get("may_touch") or []):
+        ledger.log(run_id, ticket_id, "lead", "file_touch", target=e.get("path"),
+                   payload={"why": e.get("why"), "kind": e.get("kind"),
+                            "in_scope": True}, db=db)
+
+    (workbench / "workspaces" / project / "tickets" / ticket_id).mkdir(
+        parents=True, exist_ok=True)
+    (workbench / "workspaces" / project / "tickets" / ticket_id
+     / "blast_radius.json").write_text(json.dumps(radius, indent=2))
+
+    say("")
+    say(f"  {radius.get('understanding')}")
+    say("")
+    say(f"  MAY touch ({len(radius.get('may_touch') or [])}):")
+    for e in (radius.get("may_touch") or []):
+        say(f"    [{e.get('kind')}] {e.get('path')}")
+        say(f"             {e.get('why')}")
+    if radius.get("must_not_touch"):
+        say(f"  MUST NOT touch ({len(radius['must_not_touch'])}) - edits here are blocked:")
+        for e in radius["must_not_touch"]:
+            say(f"    {e.get('path')}  -  {e.get('why')}")
+    say("")
+    say(f"  risk: {radius.get('risk')} - {radius.get('risk_why')}")
+    say(f"  fan out plans: {radius.get('fan_out_plans')}")
+    if radius.get("unknowns"):
+        say(f"  lead could not determine:")
+        for u in radius["unknowns"]:
+            say(f"    - {u}")
+    return radius
+
+
 def parse_json(text: str) -> dict:
     """Models fence JSON even when told not to. Strip it, then salvage."""
     cleaned = text.strip()
@@ -517,13 +644,22 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                     "prerequisites": prerequisites, "posted_to_jira": posted,
                     "context_gaps": context_gaps}
 
+        say("")
+        say("  comprehension PASSED")
+        say("")
+
+        radius = run_lead(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
+                          project, cfg.get("_project_path"), wb, db, say)
+
         # Planner, developer, reviewer, security, QA, mutation, retro land here.
         ledger.end_run(run_id, "running", db=db)
-        say("")
-        say("  comprehension PASSED - ready for the planner.")
+        if radius:
+            say("")
+            say("  blast radius agreed - ready for the planner.")
         return {"run_id": run_id, "outcome": outcome, "spec": spec,
                 "verdict": verdict, "questions": [],
-                "prerequisites": prerequisites, "context_gaps": context_gaps}
+                "prerequisites": prerequisites, "context_gaps": context_gaps,
+                "radius": radius}
 
     except Exception as e:
         try:
@@ -551,7 +687,7 @@ def _self_test() -> int:
     for name in ("fetch_ticket", "run_ticket", "score_comprehension",
                  "questions_from", "parse_json", "main", "spec_agent",
                  "load_project_context", "context_is_draft", "load_patterns",
-                 "post_questions", "review_learnings"):
+                 "post_questions", "review_learnings", "run_lead"):
         ok.append((f"wiring: {name} defined", callable(globals().get(name))))
 
     src = inspect.getsource(main)
@@ -1096,6 +1232,101 @@ def _self_test() -> int:
 
     ok.append(("an already-decided learning cannot be decided twice",
                review_learnings("approve", db, tmp, gid2) == 1))
+
+    # --- the lead: scope, not orchestration ----------------------------------
+    import blast_radius as br
+
+    proj = Path(tempfile.mkdtemp()) / "lead_proj"
+    (proj / "onetest" / "sources").mkdir(parents=True)
+    (proj / "config").mkdir()
+    (proj / "onetest" / "sources" / "base.py").write_text(
+        '"""Contract."""\nclass BaseSource:\n    def read(self): ...\n')
+    (proj / "onetest" / "sources" / "csv_source.py").write_text(
+        '"""CSV."""\nfrom onetest.sources.base import BaseSource\n'
+        'class CsvSource(BaseSource):\n    def read(self): ...\n')
+    (proj / "onetest" / "registry.py").write_text('"""Registry."""\nSOURCES = {}\n')
+    (proj / "config" / "sources.yaml").write_text("sources: []\n")
+
+    RADIUS = {
+        "understanding": "Add a mainframe source following the existing source pattern.",
+        "may_touch": [
+            {"path": "onetest/sources/mainframe_source.py", "kind": "create",
+             "why": "the new source, mirroring csv_source.py"},
+            {"path": "onetest/registry.py", "kind": "modify",
+             "why": "register the mainframe type"},
+        ],
+        "must_not_touch": [
+            {"path": "onetest/sources/base.py",
+             "why": "changing the contract would affect every existing source"},
+            {"path": "onetest/sources/csv_source.py",
+             "why": "adding a source is not a licence to refactor another"},
+        ],
+        "risk": "medium", "risk_why": "new source type, established pattern",
+        "fan_out_plans": False, "unknowns": [],
+    }
+    cfg_lead = dict(cfg, _project_path=str(proj))
+    logs = []
+    tx = MockTransport([json.dumps(RADIUS)])
+    r = run_lead(tx, cfg_lead, ledger.start_run("ONE-67", project="leadproj", db=db), "ONE-67", "add mainframe source",
+                 {"intent": "x"}, "", "leadproj", proj, tmp, db, logs.append)
+    ok.append(("lead declares a radius", r is not None and len(r["may_touch"]) == 2))
+    ok.append(("radius persisted for the planner",
+               (tmp / "workspaces" / "leadproj" / "tickets" / "ONE-67"
+                / "blast_radius.json").exists()))
+    ok.append(("must_not_touch is populated - an empty one protects nothing",
+               len(r["must_not_touch"]) == 2))
+    ok.append(("the lead is given the repo index, so it can name real files",
+               "registry.py" in tx.calls[0]["user"]))
+    ok.append(("the lead is NOT asked to sequence anything",
+               "orchestrat" not in tx.calls[0]["system"].lower().replace(
+                   "not orchestration", "")))
+
+    # THE check: a radius naming files that do not exist is worse than none.
+    GHOST = dict(RADIUS, may_touch=[{"path": "onetest/sources/ghost.py",
+                                     "kind": "modify", "why": "invented"}])
+    logs = []
+    tx = MockTransport([json.dumps(GHOST), json.dumps(RADIUS)])
+    r = run_lead(tx, cfg_lead, ledger.start_run("ONE-68", project="leadproj", db=db), "ONE-68", "x", {"intent": "x"}, "",
+                 "leadproj", proj, tmp, db, logs.append)
+    ok.append(("hallucinated path caught and handed back", len(tx.calls) == 2))
+    ok.append(("the violation is in the retry prompt",
+               "does not exist" in tx.calls[1]["user"]))
+    ok.append(("second attempt accepted", r is not None))
+    ok.append(("violations are shown to the human",
+               any("does not exist" in l for l in logs)))
+
+    logs = []
+    tx = MockTransport([json.dumps(GHOST), json.dumps(GHOST)])
+    r = run_lead(tx, cfg_lead, ledger.start_run("ONE-69", project="leadproj", db=db), "ONE-69", "x", {"intent": "x"}, "",
+                 "leadproj", proj, tmp, db, logs.append)
+    ok.append(("twice-invalid radius is refused, not accepted", r is None))
+    ok.append(("refusal says why - a fictional boundary is worse than none",
+               any("names files that do not exist" in l for l in logs)))
+    with ledger.connect(db) as con:
+        e = con.execute("SELECT COUNT(*) FROM events WHERE ticket_id='ONE-69' "
+                        "AND event_type='escalation' AND actor='lead'").fetchone()[0]
+        ok.append(("the failure is recorded, not swallowed", e == 1))
+
+    logs = []
+    r = run_lead(MockTransport([]), dict(cfg, _project_path=None), ledger.start_run("ONE-70", project="noproj", db=db), "ONE-70",
+                 "x", {"intent": "x"}, "", "noproj", None, tmp, db, logs.append)
+    ok.append(("no repo map -> no radius, and it says so",
+               r is None and any("cannot bound what it cannot see" in l for l in logs)))
+
+    # The boundary is enforcement, not advice.
+    ok.append(("in-scope edit allowed",
+               br.check_edit(RADIUS, "onetest/registry.py")["allow"] is True))
+    ok.append(("a file nobody authorised is REFUSED",
+               br.check_edit(RADIUS, "onetest/validators/x.py")["allow"] is False))
+    ok.append(("the shared base class is protected by name",
+               br.check_edit(RADIUS, "onetest/sources/base.py")["allow"] is False))
+
+    with ledger.connect(db) as con:
+        touched = [r["target"] for r in con.execute(
+            "SELECT target FROM events WHERE ticket_id='ONE-67' AND actor='lead' "
+            "AND event_type='file_touch'")]
+        ok.append(("every in-scope file is an event - the graph gets its edges",
+                   len(touched) == 2))
 
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
