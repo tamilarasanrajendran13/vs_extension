@@ -310,8 +310,13 @@ def run_lead(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
                        {"text": "lead produced no blast radius",
                         "steps": r["steps"]}, db=db)
             return None
+        budget = A.get("max_steps", 6)
         if r["chars_read"]:
-            say(f"  lead read {r['chars_read']} chars across {r['steps_used']} look(s)")
+            say(f"  lead read {r['chars_read']} chars across "
+                f"{r['steps_used']}/{budget} look(s)")
+        if r["steps_used"] >= budget:
+            say(f"  lead used its ENTIRE budget - it may have wanted more. "
+                f"Raise max_steps in agents/lead.md if this keeps happening.")
 
         violations = br.verify(radius, repo_map, project_path)
         if not violations:
@@ -395,7 +400,18 @@ def run_planner(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
     import ticket_workspace as tws
 
     A = roster.load("planner", workbench)
-    fan = bool(radius.get("fan_out_plans"))
+
+    # The lead decides from risk; config can override. 'always' exists because
+    # "is the bake-off worth it?" should be a measurement, not an opinion - the
+    # ledger records which model won each time, so after 20 tickets it is a query.
+    mode = (cfg.get("governor") or {}).get("fan_out_plans", "auto")
+    if mode == "always":
+        fan, why = True, "forced by config"
+    elif mode == "never":
+        fan, why = False, "disabled by config"
+    else:
+        fan = bool(radius.get("fan_out_plans"))
+        why = f"lead says risk={radius.get('risk')}" if fan else "clear precedent - no bake-off"
     roles = ["worker", "second_plan", "judge"] if fan else ["worker"]
 
     parts = [f"TICKET {ticket_id}\n\n{ticket_text}",
@@ -414,8 +430,7 @@ def run_planner(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
     }
 
     say("")
-    say(f"planning ({len(roles)} plan{'s' if fan else ''}, "
-        f"{'risky ticket' if fan else 'clear precedent - no bake-off'})...")
+    say(f"planning ({len(roles)} plan{'s' if fan else ''}, {why})...")
 
     plans: list[dict] = []
     for i, role in enumerate(roles, 1):
@@ -453,8 +468,16 @@ def run_planner(tx, cfg: dict, run_id: str, ticket_id: str, ticket_text: str,
 
         plan["_author"] = role
         plans.append(plan)
+        budget = A.get("max_steps", 8)
         say(f"    planner {i}: {len(plan.get('steps') or [])} step(s), "
-            f"{len(plan.get('tests') or [])} test(s), {r['steps_used']} look(s)")
+            f"{len(plan.get('tests') or [])} test(s), {r['steps_used']}/{budget} look(s)")
+        # Spending the whole budget is not a pass mark. It means the planner
+        # finished on its last available look - it may simply have run out of
+        # road, and you cannot tell from the plan itself. Raise max_steps in
+        # agents/planner.md if this is routine.
+        if r["steps_used"] >= budget:
+            say(f"    planner {i} used its ENTIRE budget - it may have wanted more. "
+                f"Raise max_steps in agents/planner.md if this keeps happening.")
         tws.write(workbench, release, ticket_id, "plan", f"candidate-{i}-{role}.md",
                   planning.render_plan(plan, ticket_id),
                   ledger_mod=ledger, db=db, run_id=run_id, actor=f"planner:{role}")
@@ -1839,6 +1862,35 @@ def _self_test() -> int:
     ok.append(("all three candidates kept",
                len(list((tmp / "development" / "R2025.10" / "P-4" / "plan")
                         .glob("candidate-*"))) == 3))
+
+    # The override exists so "is the bake-off worth it?" can be measured rather
+    # than argued.
+    logs = []
+    tx = MockTransport([dplan(PLAN), dplan(PLAN_B), dplan(PLAN), JUDGE])
+    run_planner(tx, dict(cfg, governor={"fan_out_plans": "always"}),
+                ledger.start_run("P-6", project="leadproj", db=db), "P-6", "text",
+                {"intent": "x"}, "", pradius, "leadproj", proj, tmp, "R2025.10",
+                db, logs.append)
+    ok.append(("config 'always' overrides a low-risk lead", len(tx.calls) == 4))
+    ok.append(("...and says it was forced", any("forced by config" in l for l in logs)))
+
+    logs = []
+    tx = MockTransport([dplan(PLAN)])
+    run_planner(tx, dict(cfg, governor={"fan_out_plans": "never"}),
+                ledger.start_run("P-7", project="leadproj", db=db), "P-7", "text",
+                {"intent": "x"}, "", fanr, "leadproj", proj, tmp, "R2025.10",
+                db, logs.append)
+    ok.append(("config 'never' overrides a risky lead", len(tx.calls) == 1))
+    ok.append(("...and says it was disabled", any("disabled by config" in l for l in logs)))
+
+    logs = []
+    tx = MockTransport([dplan(PLAN), dplan(PLAN_B), dplan(PLAN), JUDGE])
+    run_planner(tx, dict(cfg, governor={"fan_out_plans": "auto"}),
+                ledger.start_run("P-8", project="leadproj", db=db), "P-8", "text",
+                {"intent": "x"}, "", fanr, "leadproj", proj, tmp, "R2025.10",
+                db, logs.append)
+    ok.append(("'auto' trusts the lead's risk call", len(tx.calls) == 4))
+    ok.append(("...and says whose call it was", any("lead says risk=" in l for l in logs)))
 
     logs = []
     tx = MockTransport([dplan(WANDER)] * 3)
