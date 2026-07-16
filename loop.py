@@ -75,26 +75,55 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
 
     Cached on the tree hash: a codebase's shape changes far more slowly than
     tickets arrive, so this runs when the code changes, not once per ticket.
+
+    EVERY early return here says why. An earlier version returned "" silently on
+    a missing path or a failed import, so the cartographer simply never ran and
+    nothing in the log mentioned it. That is the exact bug this pipeline exists
+    to prevent: a step that cannot run must announce it, never shrug.
     """
-    if not project_path or not Path(project_path).exists():
+    # The sibling layout tells us where the project is: agentic-development/
+    # contains docket/ and onetest/. Do not depend on the caller passing it.
+    if not project_path:
+        derived = Path(workbench).parent / project
+        if derived.exists():
+            project_path = derived
+            say(f"  project path not passed - derived {derived}")
+        else:
+            say(f"  NO PATTERNS: no project path, and no sibling '{project}' next to "
+                f"the workbench. The cartographer cannot read a repo it cannot find.")
+            return ""
+
+    if not Path(project_path).exists():
+        say(f"  NO PATTERNS: {project_path} does not exist.")
         return ""
+
     try:
         import map_repo, cartographer
-    except ImportError:
+    except ImportError as e:
+        say(f"  NO PATTERNS: could not import the map ({e}). "
+            f"Are map_repo.py and cartographer.py in scripts/?")
         return ""
 
     cache = workbench / "workspaces" / project / "repo_map.json"
     try:
         m, was_cached = map_repo.load_or_scan(Path(project_path), cache)
     except Exception as e:
-        say(f"  repo map failed: {e}")
+        say(f"  NO PATTERNS: repo scan failed: {e}")
+        return ""
+
+    if not m["stats"]["modules"]:
+        say(f"  NO PATTERNS: no python modules found under {project_path}. "
+            f"Wrong folder, or a language the AST walker does not read yet.")
         return ""
 
     th = m["tree_hash"]
     if not cartographer.is_stale(workbench, project, th):
         p = cartographer.load(workbench, project)
-        say(f"  patterns: cached ({m['stats']['modules']} modules, tree {th[:8]})")
-        return cartographer.render(p)
+        eps = p.get("extension_points") or []
+        say(f"  patterns: cached - {len(eps)} extension point(s), "
+            f"{m['stats']['modules']} modules, tree {th[:8]}")
+        say(f"    (delete workspaces/{project}/patterns.json to re-explore)")
+        return cartographer.render(p) + "\n\n" + map_repo.render_environment(m)
 
     index = map_repo.render_index(m)
     say(f"  repo changed - exploring ({m['stats']['modules']} modules indexed, "
@@ -114,17 +143,22 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
         p = cartographer.explore(tx, tools, index, th, workbench, project,
                                  context=ctx, say=say)
     except Exception as e:
-        say(f"  cartographer failed: {e}")
+        say(f"  NO PATTERNS: cartographer failed: {e}")
         return ""
 
     eps = p.get("extension_points") or []
     say(f"  patterns: {len(eps)} extension point(s) after {p.get('steps_used')} look(s), "
         f"{p.get('chars_read', 0)} chars read")
+    say(f"  environment: {m['stats']['jars']} jar(s), {m['stats']['configs']} config(s) "
+        f"- the spec agent will not ask you to supply these")
     for ep in eps:
         say(f"    - {ep.get('what')} via {ep.get('mechanism')} [{ep.get('confidence')}]")
     if not eps:
         say("    none identified - the planner will have to look for itself")
-    return cartographer.render(p)
+    say(f"    written to workspaces/{project}/patterns.json")
+    # The environment goes with the patterns. It is the cheapest gate there is:
+    # a jar that is on disk is not a question.
+    return cartographer.render(p) + "\n\n" + map_repo.render_environment(m)
 
 
 def load_project_context(workbench: Path, project: str) -> str | None:
@@ -263,7 +297,8 @@ def fetch_ticket(cfg: dict, ticket_id: str) -> tuple[str, dict]:
     # "is there a sample copybook?" - they attach one. Pull them down so the gate
     # can see the file exists rather than take someone's word for it.
     wb = Path(cfg.get("_workbench", Path(__file__).parent))
-    dest = wb / "workspaces" / cfg.get("_project", "unknown") / "tickets" / ticket_id / "attachments"
+    dest = (wb / "workspaces" / cfg.get("_project", "unknown") / "tickets"
+            / ticket_id / "attachments")
     try:
         atts = client.get_attachments(ticket_id)
         pulled = clarify.download_all(client, atts, dest) if atts else []
@@ -857,7 +892,7 @@ def _self_test() -> int:
 
     ctx_before = (tmp / "context" / "onetest.md").read_text()
     review_learnings("approve", db, tmp, row["learning_id"])
-    ok.append(("approving does NOT silently edit the context file",
+    ok.append(("approve alone does NOT touch the file - it prints the line",
                (tmp / "context" / "onetest.md").read_text() == ctx_before))
     with ledger.connect(db) as con:
         st = con.execute("SELECT status, decided_by FROM learnings WHERE learning_id=?",
@@ -933,10 +968,23 @@ def _self_test() -> int:
     A = spec_agent(tmp)
     ok.append(("spec prompt loads from agents/spec.md", len(A["prompt"]) > 2000))
     ok.append(("agent file declares its model", A["model"] == "worker"))
-    ok.append(("agent file declares its version", A["version"] == 8))
+    ok.append(("agent file declares its version", A["version"] == 10))
+    ok.append(("prompt: never ask for a jar that is already on disk",
+               "already satisfied" in A["prompt"] and "drivers/" in A["prompt"]))
+    ok.append(("prompt: check the environment before emitting a prerequisite",
+               "check the environment list" in A["prompt"]))
+    ok.append(("prompt: never re-ask, not even from a different angle",
+               "wearing a better vocabulary" in A["prompt"]))
+    ok.append(("prompt: check every question against the clarifications",
+               "has a human already told me this?" in A["prompt"]))
+    ok.append(("prompt: a re-asked question costs more than a missed one",
+               "costs more than one missed question" in A["prompt"]))
+    ok.append(("prompt: durable answers become context gaps, not just N/As",
+               "would this answer still be true on a completely unrelated ticket"
+               in A["prompt"]))
     ok.append(("ledger stamp is version:hash - an edit without a version bump "
                "is still distinguishable",
-               roster.stamp(A).startswith("spec@8:") and len(roster.stamp(A)) > 8))
+               roster.stamp(A).startswith("spec@10:") and len(roster.stamp(A)) > 8))
 
     sent = tx.calls[0]["system"]
     ok.append(("the model gets the FILE's prompt, verbatim",
@@ -982,6 +1030,73 @@ def _self_test() -> int:
                len(r["prerequisites"]) == 1
                and not any("sample" in q.lower() for q in r["questions"])))
 
+    # --- every silent return is now loud ------------------------------------
+    # The bug: load_patterns returned "" on a missing path or a failed import,
+    # so the cartographer never ran and the log said nothing at all.
+    logs = []
+    r = load_patterns({}, MockTransport([]), "ghostproject", None, tmp, logs.append)
+    ok.append(("no project path -> says so, does not shrug",
+               r == "" and any("NO PATTERNS" in l for l in logs)))
+    ok.append(("and it names what it looked for",
+               any("no sibling 'ghostproject'" in l for l in logs)))
+
+    logs = []
+    load_patterns({}, MockTransport([]), "x", tmp / "nope", tmp, logs.append)
+    ok.append(("missing path -> says which path",
+               any("NO PATTERNS" in l and "nope" in l for l in logs)))
+
+    # The sibling layout is the source of truth for where a project is:
+    #   agentic-development/docket/     <- workbench
+    #   agentic-development/onetest/    <- sibling
+    area = Path(tempfile.mkdtemp())
+    fake_wb = area / "docket"; fake_wb.mkdir()
+    sib = area / "siblingproj"
+    (sib / "pkg").mkdir(parents=True)
+    (sib / "pkg" / "m.py").write_text("class A: pass\n")
+    logs = []
+    load_patterns({}, MockTransport(["not json"]), "siblingproj", None, fake_wb, logs.append)
+    ok.append(("project path derived from the sibling layout when not passed",
+               any("derived" in l and "siblingproj" in l for l in logs)))
+    ok.append(("derivation is announced, not silent",
+               any("not passed - derived" in l for l in logs)))
+
+    empty = tmp / "emptyproj"; empty.mkdir()
+    logs = []
+    r = load_patterns({}, MockTransport([]), "emptyproj", empty, tmp, logs.append)
+    ok.append(("no python modules -> says so rather than exploring nothing",
+               r == "" and any("no python modules found" in l for l in logs)))
+
+    # --apply: a human explicitly asking is not a model editing itself silently.
+    with ledger.connect(db) as con:
+        any_event = con.execute("SELECT MIN(event_id) FROM events").fetchone()[0]
+        gid2 = con.execute(
+            "INSERT INTO learnings (run_id, cited_event_id, artifact_path, "
+            "proposed_diff, rationale) VALUES (?,?,?,?,?)",
+            (None, any_event, "context/onetest.md",
+             "+ NOT a Polars framework - PySpark only",
+             "author said: we do not support Polars anywhere")).lastrowid
+    review_learnings("approve", db, tmp, gid2, apply=True)
+    after = (tmp / "context" / "onetest.md").read_text()
+    ok.append(("--apply appends the line", "NOT a Polars framework" in after))
+    ok.append(("appended under a clear heading, never spliced into a section",
+               "## Learned from tickets" in after))
+    ok.append(("the human's own text is untouched", ctx_before.strip() in after))
+
+    # Approving twice must not duplicate the line.
+    with ledger.connect(db) as con:
+        any_event = con.execute("SELECT MIN(event_id) FROM events").fetchone()[0]
+        gid3 = con.execute(
+            "INSERT INTO learnings (run_id, cited_event_id, artifact_path, "
+            "proposed_diff, rationale) VALUES (?,?,?,?,?)",
+            (None, any_event, "context/onetest.md",
+             "+ NOT a Polars framework - PySpark only", "same fact again")).lastrowid
+    review_learnings("approve", db, tmp, gid3, apply=True)
+    ok.append(("re-approving the same line does not duplicate it",
+               (tmp / "context" / "onetest.md").read_text().count("NOT a Polars framework") == 1))
+
+    ok.append(("an already-decided learning cannot be decided twice",
+               review_learnings("approve", db, tmp, gid2) == 1))
+
     w = max(len(n) for n, _ in ok)
     for name, passed in ok:
         print(f"  [{'PASS' if passed else 'FAIL'}] {name.ljust(w)}")
@@ -991,14 +1106,21 @@ def _self_test() -> int:
 
 
 def review_learnings(action: str, db: Path, workbench: Path,
-                     learning_id: int | None = None, reason: str = "") -> int:
+                     learning_id: int | None = None, reason: str = "",
+                     apply: bool = False) -> int:
     """
     Context gaps the pipeline proposed, for a human to merge or bin.
 
-    Approving does NOT edit the file. Docket prints the line and you paste it in.
-    That is deliberate: this file is prepended to every model call on every
-    ticket forever, and a model silently editing its own instructions is the one
-    loop that must stay open. The agent proposes; you merge.
+    A gap means: I asked something I should never have needed to ask, because the
+    answer is a permanent property of this codebase. Answer it once in Jira, put
+    the line in context/<project>.md, and no agent asks it again on any ticket.
+
+    Approve prints the line by default. --apply appends it for you.
+
+    The line I will not cross: nothing here fires without a human typing it. That
+    file is prepended to every model call on every ticket forever, and a model
+    quietly editing its own instructions is the one loop that must stay open. You
+    typing --apply is not the model deciding; it is you deciding, faster.
     """
     with ledger.connect(db) as con:
         if action == "list":
@@ -1007,17 +1129,18 @@ def review_learnings(action: str, db: Path, workbench: Path,
             if not rows:
                 print("\n  No proposed context gaps.\n")
                 return 0
-            print(f"\n  {len(rows)} proposed context gap(s):\n")
+            print(f"\n  {len(rows)} proposed context gap(s).")
+            print("  Each is a question Docket should never have needed to ask.\n")
             for r in rows:
-                print(f"  [{r['learning_id']}] {r['artifact_path']}")
+                print(f"  [{r['learning_id']}] -> {r['artifact_path']}")
                 print(f"      {r['proposed_diff']}")
-                print(f"      why: {r['rationale']}")
-                print(f"      cited event: {r['cited_event_id']}")
+                print(f"      because: {r['rationale']}")
                 print()
-            print("  Approve:  python loop.py --learnings approve --id N")
-            print("  Discard:  python loop.py --learnings discard --id N --reason '...'")
-            print("\n  Approving prints the line. YOU paste it into the context file -")
-            print("  a model must never silently edit its own instructions.\n")
+            print("  Read each one. Is it TRUE, and true on every future ticket?")
+            print("    yes -> python loop.py --learnings approve --id N --apply")
+            print("    no  -> python loop.py --learnings discard --id N --reason '...'")
+            print("\n  A wrong line here poisons every ticket after it, so discard")
+            print("  freely - a discarded gap is never proposed again.\n")
             return 0
 
         if not learning_id:
@@ -1029,14 +1152,41 @@ def review_learnings(action: str, db: Path, workbench: Path,
         if not row:
             print(f"no learning {learning_id}", file=sys.stderr)
             return 1
+        if row["status"] != "proposed":
+            print(f"learning {learning_id} is already {row['status']}", file=sys.stderr)
+            return 1
 
         if action == "approve":
+            target = Path(workbench) / row["artifact_path"]
+            line = row["proposed_diff"].lstrip("+ ").rstrip()
+
+            if apply:
+                if not target.exists():
+                    print(f"\n  {target} does not exist. Paste it yourself:\n\n      {line}\n",
+                          file=sys.stderr)
+                    return 1
+                text = target.read_text(encoding="utf-8")
+                if line in text:
+                    print(f"\n  Already in {target.name}. Marking approved.\n")
+                else:
+                    # Appended under a clear heading, never spliced into a section
+                    # it might not belong in. You can move it; you cannot unsee a
+                    # line silently inserted in the wrong place.
+                    if "## Learned from tickets" not in text:
+                        text = text.rstrip() + "\n\n## Learned from tickets\n"
+                    text = text.rstrip() + f"\n- {line}\n"
+                    target.write_text(text, encoding="utf-8")
+                    print(f"\n  Added to {target}:\n\n      - {line}\n")
+                    print(f"  It landed under '## Learned from tickets'. Move it to the")
+                    print(f"  section where it belongs when you next open the file.\n")
+            else:
+                print(f"\n  Approved. Paste this into {target}:\n\n      - {line}\n")
+                print("  (or re-run with --apply and I will append it)\n")
+
             con.execute(
                 "UPDATE learnings SET status='approved', decided_by=?, "
                 "decided_at=datetime('now') WHERE learning_id=?",
                 (ledger.origin(), learning_id))
-            print(f"\n  Approved. Paste this into {workbench / row['artifact_path']}:\n")
-            print(f"      {row['proposed_diff']}\n")
             return 0
 
         con.execute(
@@ -1068,6 +1218,8 @@ def main() -> int:
                     help="review context gaps the pipeline proposed")
     ap.add_argument("--id", type=int, help="learning id, for approve/discard")
     ap.add_argument("--reason", default="", help="why discarded")
+    ap.add_argument("--apply", action="store_true",
+                    help="on approve: append the line to the context file for me")
     ap.add_argument("--workbench", default=str(Path(__file__).parent))
     ap.add_argument("--project", default="unknown")
     ap.add_argument("--release", default=None)
@@ -1085,7 +1237,7 @@ def main() -> int:
     cfg["_workbench"] = str(wb)
 
     if a.learnings:
-        return review_learnings(a.learnings, db, wb, a.id, a.reason)
+        return review_learnings(a.learnings, db, wb, a.id, a.reason, a.apply)
 
     tx = transport_mod.build("api" if a.api else "stdio")
 

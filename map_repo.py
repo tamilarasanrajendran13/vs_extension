@@ -355,6 +355,176 @@ def load_or_scan(project_path: Path, cache_path: Path, force: bool = False) -> t
 
 # ---------------------------------------------------------------- slice
 
+def list_files(project_path: Path, glob: str = "**/*", max_results: int = 200) -> str:
+    """A tool. The agent asks; we answer. No interpretation."""
+    project_path = Path(project_path).resolve()
+    try:
+        hits = []
+        for f in project_path.glob(glob):
+            if not f.is_file():
+                continue
+            parts = f.relative_to(project_path).parts
+            if any(p in SKIP_DIRS or p.startswith(".") for p in parts):
+                continue
+            hits.append("/".join(parts))
+            if len(hits) >= max_results:
+                break
+        return "\n".join(sorted(hits)) or "(no matches)"
+    except Exception as e:
+        return f"(list failed: {e})"
+
+
+def grep_files(project_path: Path, pattern: str, glob: str = "**/*.py",
+               max_hits: int = 60) -> str:
+    """
+    Plain substring search, not regex. A model writing a regex against an unknown
+    codebase produces a broken regex and a wasted look.
+    """
+    project_path = Path(project_path).resolve()
+    if not pattern:
+        return "(empty pattern)"
+    hits = []
+    try:
+        for f in project_path.glob(glob):
+            if not f.is_file() or f.suffix in JAR_SUFFIXES:
+                continue
+            parts = f.relative_to(project_path).parts
+            if any(p in SKIP_DIRS or p.startswith(".") for p in parts):
+                continue
+            try:
+                for i, line in enumerate(f.read_text(encoding="utf-8",
+                                                     errors="ignore").splitlines(), 1):
+                    if pattern in line:
+                        hits.append(f"{'/'.join(parts)}:{i}: {line.strip()[:160]}")
+                        if len(hits) >= max_hits:
+                            return "\n".join(hits) + f"\n... (capped at {max_hits})"
+            except OSError:
+                continue
+    except Exception as e:
+        return f"(grep failed: {e})"
+    return "\n".join(hits) or f"(no matches for {pattern!r})"
+
+
+def read_files(project_path: Path, rel_paths: list[str], max_files: int = 12,
+               max_chars_each: int = 6000, max_total: int = 40000) -> dict:
+    """
+    Read specific files, on request, with hard bounds.
+
+    This exists because a fixed extraction will always miss something. I decided
+    what to pull out of your repo, and I was guessing: the index shows config
+    PATHS but not config CONTENTS, and on a framework with 45 YAML files and 24
+    modules the pattern may well live in the YAML. "What YAML shape do existing
+    source types use?" was a real investigation from a real ticket, and the index
+    cannot answer it.
+
+    So instead of extracting harder, we let the agent ASK. It sees the map, picks
+    what to open, and reads it. It cannot be blindsided by a shape I failed to
+    anticipate, because it is not relying on my anticipation.
+
+    The bounds are the whole point of the design. Unbounded, this is "read the
+    repo into context on every ticket" - 200k tokens and a model that summarises
+    instead of thinking. Bounded, it is a map plus a dozen files.
+
+    Refuses to escape the project directory: a path is a string from a model, and
+    "../../../etc/passwd" is a perfectly valid string.
+    """
+    project_path = Path(project_path).resolve()
+    out: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    total = 0
+
+    for rel in (rel_paths or [])[:max_files]:
+        rel = str(rel).strip().lstrip("/")
+        try:
+            f = (project_path / rel).resolve()
+        except (OSError, ValueError) as e:
+            errors[rel] = str(e)
+            continue
+
+        if not f.is_relative_to(project_path):
+            errors[rel] = "outside the project - refused"
+            continue
+        if not f.exists() or not f.is_file():
+            errors[rel] = "not found"
+            continue
+        if f.suffix in JAR_SUFFIXES or f.stat().st_size > 2_000_000:
+            errors[rel] = "binary or too large"
+            continue
+        if total >= max_total:
+            errors[rel] = "budget exhausted"
+            continue
+
+        try:
+            body = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            errors[rel] = str(e)
+            continue
+
+        if len(body) > max_chars_each:
+            body = body[:max_chars_each] + f"\n... truncated at {max_chars_each} chars"
+        out[rel] = body
+        total += len(body)
+
+    return {"files": out, "errors": errors, "chars": total}
+
+
+def render_files(read: dict) -> str:
+    parts = []
+    for rel, body in (read.get("files") or {}).items():
+        parts.append(f"=== {rel} ===\n{body}")
+    for rel, err in (read.get("errors") or {}).items():
+        parts.append(f"=== {rel} ===\n(could not read: {err})")
+    return "\n\n".join(parts)
+
+
+def render_environment(m: dict) -> str:
+    """
+    WHAT IS ALREADY HERE. Jars, configs, dependencies.
+
+    This exists because of a real run: the spec agent asked "is there a Cobrix
+    jar available, or must the developer choose one?" while cobrix.jar sat in
+    drivers/, indexed, three layers up. map_repo found it, the index listed it,
+    the cartographer read it - and then render() dropped it before the spec agent
+    ever saw it.
+
+    Asking a human to supply something already on disk is the same failure as
+    asking them to re-specify something the codebase already decided. Both train
+    people to ignore the gate.
+    """
+    out = []
+    if m["jars"]:
+        out.append("JARS PRESENT (already on disk - do NOT ask anyone to supply these):")
+        for j in sorted(m["jars"]):
+            out.append(f"  {j}")
+    else:
+        out.append("JARS: none found in this repo.")
+
+    from collections import defaultdict as _dd
+    by_dir = _dd(list)
+    for c in m["configs"]:
+        by_dir[str(Path(c).parent)].append(Path(c).name)
+    if by_dir:
+        out.append("\nCONFIG FILES PRESENT:")
+        for d, names in sorted(by_dir.items()):
+            shown = ", ".join(sorted(names)[:10])
+            more = f"  (+{len(names) - 10} more)" if len(names) > 10 else ""
+            out.append(f"  {d}/  {shown}{more}")
+
+    deps = []
+    for rel, mod in m["modules"].items():
+        for imp in mod["imports"]:
+            top = imp.split(".")[0]
+            if top not in ("os", "sys", "json", "re", "pathlib", "typing",
+                           "collections", "datetime", "logging", "abc"):
+                deps.append(top)
+    if deps:
+        from collections import Counter as _C
+        common = [d for d, _ in _C(deps).most_common(20)]
+        out.append(f"\nIMPORTED PACKAGES: {', '.join(common)}")
+
+    return "=== WHAT IS ALREADY IN THIS ENVIRONMENT ===\n" + "\n".join(out)
+
+
 def render_index(m: dict, max_chars: int = 24000) -> str:
     """
     THE WHOLE REPO, as facts, small enough to read.
@@ -593,6 +763,35 @@ def _self_test() -> int:
     ok.append(("unmatched ticket still shows the patterns", len(sl2["families"]) > 0))
 
     # The index: the whole repo as facts, small enough for an agent to read.
+    # read_files: the escape hatch from my own guesses about what matters.
+    r = read_files(root, ["onetest/sources/csv_source.py", "config/sources.yaml"])
+    ok.append(("reads requested files", len(r["files"]) == 2))
+    ok.append(("reads CONFIG contents, which the index only names",
+               "type: csv" in r["files"]["config/sources.yaml"]))
+    r = read_files(root, ["../../../etc/passwd"])
+    ok.append(("refuses to escape the project - a path is a string from a model",
+               "outside the project" in str(r["errors"])))
+    r = read_files(root, ["nope/missing.py"])
+    ok.append(("missing file reported, not raised", "not found" in str(r["errors"])))
+    r = read_files(root, ["drivers/ojdbc8.jar"])
+    ok.append(("refuses jars and binaries", "binary" in str(r["errors"])))
+    r = read_files(root, [f"onetest/sources/{n}_source.py" for n in
+                          ("csv", "hive", "jdbc", "parquet")] * 5)
+    ok.append(("hard cap on file count - cannot become 'read the whole repo'",
+               len(r["files"]) <= 12))
+    r = read_files(root, ["onetest/sources/base.py"], max_chars_each=20)
+    ok.append(("per-file truncation", "truncated at 20" in r["files"]["onetest/sources/base.py"]))
+
+    env = render_environment(m)
+    ok.append(("environment lists jars, so nobody is asked to supply them",
+               "ojdbc8.jar" in env))
+    ok.append(("environment says do NOT ask for what is present",
+               "do NOT ask anyone to supply these" in env))
+    ok.append(("environment lists config dirs", "config/" in env))
+    ok.append(("environment lists imported packages", "onetest" in env))
+    ok.append(("no jars -> says none, does not omit the section",
+               "JARS: none found" in render_environment({**m, "jars": []})))
+
     idx = render_index(m)
     ok.append(("index lists every module", all(r in idx for r in m["modules"])))
     ok.append(("index shows inheritance", "BaseSource" in idx and "CsvSource" in idx))
@@ -711,6 +910,8 @@ def main() -> int:
                     help="diagnostic: every class, every base, every module")
     ap.add_argument("--index", action="store_true",
                     help="the fact sheet an agent reads (the whole repo, ~2k tokens)")
+    ap.add_argument("--read", nargs="+", metavar="PATH",
+                    help="read specific files, bounded - what the cartographer requests")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
 
@@ -729,6 +930,12 @@ def main() -> int:
 
     if a.index:
         print(render_index(m))
+        return 0
+
+    if a.read:
+        r = read_files(proj, a.read)
+        print(render_files(r))
+        print(f"\n  {len(r['files'])} file(s), {r['chars']} chars", file=sys.stderr)
         return 0
 
     if a.slice:
