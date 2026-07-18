@@ -62,7 +62,7 @@ def _safe_json(payload: dict) -> str:
 def render(payload: dict) -> str:
     html = _read("bundle.html")
     stamp = (
-        f"docket report {REPORT_VERSION} · "
+        f"docket report {REPORT_VERSION} - "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     )
     # CSS and JS go in last and are never .format()ed - braces in the source

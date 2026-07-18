@@ -168,7 +168,7 @@ HEROES = {
         "label": "Tickets that could not be started as written",
         "format": "pct",
         "direction": "ambiguous",
-        "note": "The share of runs that stopped at the comprehension gate — the "
+        "note": "The share of runs that stopped at the comprehension gate -- the "
                 "ticket was too ambiguous, contradictory or untestable to build "
                 "from. This is data about how work arrives, not about the "
                 "pipeline. Falling is good news if tickets improved and bad news "
@@ -187,7 +187,7 @@ HEROES = {
         "label": "Tickets merged",
         "format": "int",
         "direction": "higher_better",
-        "note": "Throughput. Read it next to the halt rate — merging fewer "
+        "note": "Throughput. Read it next to the halt rate -- merging fewer "
                 "tickets because the gates stopped more of them is not the same "
                 "as merging fewer tickets because the pipeline slowed.",
     },
@@ -196,7 +196,7 @@ HEROES = {
         "label": "Median time from ticket to disposition",
         "format": "hours",
         "direction": "lower_better",
-        "note": "Median, not mean — one 26-hour outlier should not move it. "
+        "note": "Median, not mean -- one 26-hour outlier should not move it. "
                 "Counts halted runs, which stop the clock when a human is asked, "
                 "not when they answer.",
     },
@@ -295,7 +295,7 @@ def _cell(v):
     if isinstance(v, bytes):
         return f"<{len(v)} bytes>"
     if isinstance(v, str) and len(v) > MAX_CELL:
-        return v[:MAX_CELL] + f"… +{len(v) - MAX_CELL}"
+        return v[:MAX_CELL] + f"... +{len(v) - MAX_CELL}"
     return v
 
 
@@ -792,7 +792,7 @@ KPIS = [
     ("halt_rate", "Awaiting a human", "pct", "ambiguous",
      "Falling is not automatically good. A halt means a gate caught a ticket "
      "that could not be built from. Fewer halts is good news if tickets improved "
-     "and bad news if the gate weakened — this number cannot tell you which."),
+     "and bad news if the gate weakened -- this number cannot tell you which."),
     ("comprehension_halt_rate", "Stopped at comprehension", "pct", "ambiguous",
      "The share of runs that could not start because the ticket was not written "
      "well enough. This is org data about how work arrives, not about the "

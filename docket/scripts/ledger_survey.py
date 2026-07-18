@@ -332,7 +332,7 @@ def render(sv: dict) -> str:
 
     for name, t in sv["tables"].items():
         rows = "unknown rows" if t["rows"] is None else f"{t['rows']:,} rows"
-        L.append(f"── {name}  [{t['kind']}, {rows}]")
+        L.append(f"-- {name}  [{t['kind']}, {rows}]")
         for c in t["columns"]:
             flags = []
             if c["pk"]:
@@ -356,7 +356,7 @@ def render(sv: dict) -> str:
             L.append(f"   fk: {f['column']} -> {f['references']}")
         L.append("")
 
-    L.append("── proposed CONTRACT (a draft to correct, not an answer)")
+    L.append("-- proposed CONTRACT (a draft to correct, not an answer)")
     for logical, p in sv["proposal"].items():
         if not p.get("table"):
             L.append(f"   {logical:10} ?? {p.get('note')}")
