@@ -44,8 +44,8 @@ NEW_CONTRACT = '''CONTRACT: dict[str, dict[str, Any]] = {
             "issue": "ticket_id",
             "name": "gate_name",
             "result": "outcome",
-            "detail": "detail",
-            "at": "created_at",
+            "detail": "details_json",
+            "at": "ts",
         },
     },
     "events": {
@@ -53,9 +53,9 @@ NEW_CONTRACT = '''CONTRACT: dict[str, dict[str, Any]] = {
         "pk": "event_id",
         "columns": {
             "issue": "ticket_id",
-            "at": "created_at",
+            "at": "ts",
             "actor": "actor",
-            "kind": "kind",
+            "kind": "event_type",
             "summary": None,
             "tokens_in": "tokens_in",
             "tokens_out": "tokens_out",
@@ -76,7 +76,7 @@ OPTIONAL_ARTIFACTS = '''    "artifacts": {
             "actor": "actor",
             "sha256": "sha256",
             "bytes": "bytes",
-            "at": "created_at",
+            "at": "ts",
         },
     },
 '''
