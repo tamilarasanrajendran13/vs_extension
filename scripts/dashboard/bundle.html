@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<!--
+  Docket dashboard - the shared bundle.
+
+  MULTI-PAGE, SINGLE FILE. Those are not in tension, and the reason matters:
+  this file gets emailed to someone who opens it on a locked-down laptop,
+  possibly offline, and installs nothing. Real navigation, real pages, real back
+  button, real deep links (#/runs, #/cost) - all client side, all in one
+  attachment. A second file is a second thing to lose.
+
+  ONE frontend, hosted three ways, and it never learns which one it is in:
+
+    report.py       inlines app.css, app.js and the payload -> one .html
+    the webview     serves this file, posts the payload in, re-posts every gate
+    a local server  reads ledger.db, serves this file. only if it earns its keep
+
+  Do not put pipeline logic in here. The moment this file learns what a ticket
+  is, the dashboard is welded to one host - the same mistake the gateway is
+  under standing orders not to make.
+
+  The double-underscored DOCKET tokens are placeholders that report.py replaces.
+  Opened raw in a browser they are inert and the page waits for a postMessage.
+  (This comment spells them out the long way on purpose: report.py asserts that
+  no placeholder token survives into the output, and a comment naming one
+  literally would defeat its own test.)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docket — pipeline register</title>
+<style>__DOCKET_CSS__</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap masthead-in">
+    <div class="wordmark">Docket</div>
+    <div class="scope"></div>
+    <div class="stamp" style="white-space: pre-line"></div>
+  </div>
+  <nav class="nav" aria-label="Dashboard sections">
+    <div class="wrap nav-in" role="tablist"></div>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <!-- ================= OVERVIEW ================= -->
+  <section class="page" id="page-overview" data-title="Overview">
+    <div class="lead">
+      <div class="lead-figure">
+        <div class="eyebrow"></div>
+        <div class="value"></div>
+        <div class="note"></div>
+      </div>
+      <div class="figures"></div>
+    </div>
+
+    <div class="shape"></div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>Key metrics</h2>
+        <div class="sub kpi-scope"></div>
+      </div>
+      <div class="kpis"></div>
+    </div>
+
+    <div class="section" data-needs="trend">
+      <div class="section-head">
+        <h2>Across releases</h2>
+        <div class="sub">The only view here that is not a snapshot.</div>
+      </div>
+      <div class="trends"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>What stopped this release</h2>
+        <div class="sub">The failure taxonomy, straight off the ledger.</div>
+      </div>
+      <div class="panel"><div class="tax"></div></div>
+    </div>
+  </section>
+
+  <!-- ================= RUNS ================= -->
+  <section class="page" id="page-runs" data-title="Runs">
+    <div class="section">
+      <div class="section-head">
+        <h2>The gate walk</h2>
+        <div class="sub">One row per run. Where a row stops is the finding.</div>
+        <div class="chips" role="group" aria-label="Filter runs by disposition">
+          <button class="chip" data-filter="all" aria-pressed="true">All</button>
+          <button class="chip" data-filter="halted" aria-pressed="false">Awaiting a human</button>
+          <button class="chip" data-filter="failed" aria-pressed="false">Failed</button>
+          <button class="chip" data-filter="merged" aria-pressed="false">Merged</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="walk-head">
+          <div class="eyebrow">Ticket</div>
+          <div class="gate-cols"></div>
+          <div class="eyebrow">Disposition</div>
+        </div>
+        <div class="walk"></div>
+        <div class="legend">
+          <div class="item"><span class="mark pass"></span> passed</div>
+          <div class="item"><span class="mark halt"></span> a human is needed — the gate did its job</div>
+          <div class="item"><span class="mark fail"></span> something is wrong</div>
+          <div class="item"><span class="mark unknown"></span> unknown — we did not measure it</div>
+          <div class="item"><span class="mark never_reached"></span> never reached</div>
+        </div>
+      </div>
+      <div class="sub" style="padding-top:10px">Click any run for its gate evidence, agent timeline, artifacts and every other table this ledger holds about it.</div>
+    </div>
+  </section>
+
+  <!-- ================= GATES ================= -->
+  <section class="page" id="page-gates" data-title="Gates">
+    <div class="section">
+      <div class="section-head">
+        <h2>Gate ledger</h2>
+        <div class="sub">What each gate caught that everything upstream let through.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <thead>
+            <tr><th>Gate</th><th>Ran</th><th>Passed</th><th>Caught</th><th>Pass rate</th></tr>
+          </thead>
+          <tbody id="gate-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Why runs stop</h2>
+        <div class="sub">Grouped by gate and reason.</div>
+      </div>
+      <div class="panel"><div class="tax tax2"></div></div>
+    </div>
+  </section>
+
+  <!-- ================= COST ================= -->
+  <section class="page" id="page-cost" data-title="Cost">
+    <div class="section">
+      <div class="section-head">
+        <h2>Cost by agent</h2>
+        <div class="sub">Which agent is spending the money.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <thead>
+            <tr><th>Agent</th><th>Cost</th><th>Calls</th><th>Tokens in</th><th>Tokens out</th></tr>
+          </thead>
+          <tbody id="agent-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section" data-needs="models">
+      <div class="section-head">
+        <h2>Models</h2>
+        <div class="sub">Which model is spending it.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <thead>
+            <tr><th>Model</th><th>Cost</th><th>Calls</th><th>Cost/call</th></tr>
+          </thead>
+          <tbody id="model-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROMPTS ================= -->
+  <section class="page" id="page-prompts" data-title="Prompts" data-needs="prompt_versions">
+    <div class="section">
+      <div class="section-head">
+        <h2>Prompt versions</h2>
+        <div class="sub">Every event records the version that produced it. This is what that buys.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <thead>
+            <tr><th>Version</th><th>Calls</th><th>Runs</th><th>Merged</th><th>Cost/call</th></tr>
+          </thead>
+          <tbody id="prompt-body"></tbody>
+        </table>
+        <div class="legend">
+          Correlation, not cause — too much moves at once to claim a version made a
+          run merge. It tells you where to look.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ARTIFACTS ================= -->
+  <section class="page" id="page-artifacts" data-title="Artifacts" data-needs="artifact_kinds">
+    <div class="section">
+      <div class="section-head">
+        <h2>Artifacts</h2>
+        <div class="sub">What the pipeline produced, under development/&lt;release&gt;/&lt;ticket&gt;/.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <thead>
+            <tr><th>Section</th><th>Files</th><th>Tickets</th><th>Bytes</th></tr>
+          </thead>
+          <tbody id="artifact-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= LEDGER ================= -->
+  <section class="page" id="page-ledger" data-title="Ledger" data-needs="inventory">
+    <div class="section">
+      <div class="section-head">
+        <h2>The rest of the ledger</h2>
+        <div class="sub">Tables nobody told the dashboard about. Found by reading your schema, not by being described.</div>
+      </div>
+      <div class="inventory"></div>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <span>Read-only. This page renders <code>ledger.db</code> and cannot change it.</span>
+    <span>An em-dash means the ledger did not record it. It never means zero.</span>
+    <span>__DOCKET_STAMP__</span>
+  </footer>
+</main>
+
+<script>window.DOCKET_PAYLOAD = __DOCKET_PAYLOAD__;</script>
+<script>__DOCKET_JS__</script>
+</body>
+</html>
