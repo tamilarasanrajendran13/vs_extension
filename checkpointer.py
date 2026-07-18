@@ -31,6 +31,7 @@ Self-test:  python checkpointer.py --self-test
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -135,7 +136,48 @@ class Checkpointer:
                      allow_empty=True)
         sha = self._rev_parse("HEAD")
         self._tag(0, sha)
+        self._write_meta()
         return sha
+
+    def _write_meta(self):
+        # Self-describing sidecar so a standalone tool (rollback.py) can reopen
+        # this checkpointer for a ticket without being told the project path or
+        # blast radius again.
+        meta = {
+            "project_root": str(self.project_root),
+            "radius": self.radius,
+        }
+        (self.shadow.parent / "checkpoint-meta.json").write_text(
+            json.dumps(meta, indent=2), encoding="ascii")
+
+    @classmethod
+    def open(cls, shadow_git_dir):
+        """Reopen an existing checkpointer from its shadow repo. Reads the meta
+        sidecar; if it is missing (an older repo), reconstructs the project root
+        from git's core.worktree and the radius from the tracked files.
+        """
+        shadow = Path(shadow_git_dir).resolve()
+        if not (shadow / "HEAD").exists():
+            raise CheckpointError("no checkpoint repo at {}".format(shadow))
+        meta_path = shadow.parent / "checkpoint-meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="ascii"))
+            return cls(meta["project_root"], shadow, meta["radius"])
+        # Fallback for a repo made before meta existed.
+        worktree = subprocess.run(
+            ["git", "--git-dir", str(shadow), "config", "core.worktree"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        root = worktree.stdout.strip()
+        if not root:
+            raise CheckpointError(
+                "cannot recover project root for {}".format(shadow))
+        tracked = subprocess.run(
+            ["git", "--git-dir", str(shadow), "--work-tree", root, "ls-files"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        radius = [ln.strip() for ln in tracked.stdout.splitlines() if ln.strip()]
+        if not radius:
+            raise CheckpointError("no tracked files to derive a radius from")
+        return cls(root, shadow, radius)
 
     def _tracked(self):
         proc = self._git("ls-files", "--", *self.radius)
@@ -339,6 +381,25 @@ def _trailer(body, key):
     return ""
 
 
+def discover_tickets(cache_root):
+    """Find every ticket that has a checkpoint repo under cache_root, laid out
+    as <cache>/<project>/<ticket>/checkpoints.git. Returns a list of dicts with
+    project, ticket, and shadow path, so a tool can list tickets without a db.
+    """
+    root = Path(cache_root)
+    found = []
+    if not root.exists():
+        return found
+    for shadow in sorted(root.glob("*/*/checkpoints.git")):
+        ticket_dir = shadow.parent
+        found.append({
+            "project": ticket_dir.parent.name,
+            "ticket": ticket_dir.name,
+            "shadow": str(shadow),
+        })
+    return found
+
+
 # ==================================================================== self-test
 
 def _self_test():
@@ -446,6 +507,19 @@ def _self_test():
            cp.trees_equal(sha0, sha0) is True)
         ok("trees_equal is false for pristine vs task-02",
            cp.trees_equal(sha0, sha2) is False)
+
+        # Reopen from the meta sidecar - no project path or radius re-supplied.
+        reopened = Checkpointer.open(shadow)
+        ok("reopened checkpointer sees all checkpoints",
+           len(reopened.list_checkpoints()) == 3)
+        ok("reopened radius matches", reopened.radius == cp.radius)
+        ok("reopened can roll back to original",
+           reopened.rollback("pristine")["identical"] is True)
+
+        tickets = discover_tickets(Path(td) / "cache")
+        ok("discovery finds the ticket",
+           any(t["ticket"] == "PROJ-1" and t["project"] == "onetest"
+               for t in tickets))
 
         # Empty radius must be refused.
         try:
