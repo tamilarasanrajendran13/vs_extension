@@ -76,12 +76,13 @@ OPTIONAL_ARTIFACTS = '''    "artifacts": {
         "table": "artifacts",
         "columns": {
             "issue": "ticket_id",
+            "run": "run_id",
             "kind": "kind",
             "rel_path": "rel_path",
             "actor": "actor",
             "sha256": "sha256",
             "bytes": "bytes",
-            "at": "ts",
+            "at": "created_at",
         },
     },
 '''
@@ -131,6 +132,7 @@ def main():
         "table": "artifacts",
         "columns": {
             "issue": "ticket",
+            "run": None,
             "kind": "kind",
             "rel_path": "rel_path",
             "actor": "actor",

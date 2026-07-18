@@ -122,6 +122,7 @@ OPTIONAL: dict[str, dict[str, Any]] = {
         "table": "artifacts",
         "columns": {
             "issue": "ticket",
+            "run": None,
             "kind": "kind",
             "rel_path": "rel_path",
             "actor": "actor",
