@@ -182,7 +182,11 @@ def _self_test() -> int:
           any("hostile ticket" in (t.get("summary") or "")
               for t in round_tripped["tickets"]))
 
-    check("report is emailable (<600kb)", os.path.getsize(out) < 600_000)
+    # The hard emailability limit is WARN_BYTES (4MB). This self-test asserts a
+    # tighter bound on the DEMO so growth is noticed early - but the demo now
+    # carries conversations, gate scores, agent roster and architecture, all
+    # legitimately. 1MB still leaves 4x headroom under the real limit.
+    check("report is emailable (<1MB)", os.path.getsize(out) < 1_000_000)
 
     print(f"report self-test: {passed}/{passed + failed}  ({os.path.getsize(out) // 1024}kb)")
     return 0 if failed == 0 else 1

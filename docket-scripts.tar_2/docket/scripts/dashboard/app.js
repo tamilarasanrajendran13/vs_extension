@@ -182,8 +182,9 @@
     var head = $(".walk-head .gate-cols");
     head.textContent = "";
     (p.gate_order || []).forEach(function (g) {
+      var info = (p.gate_info || {})[g];
       var c = el("div", "eyebrow", GATE_ABBR[g] || g.slice(0, 4).toUpperCase());
-      c.title = g;
+      c.title = info ? info.label + " — " + info.desc : g;
       head.appendChild(c);
     });
 
@@ -368,6 +369,36 @@
     }
 
     // ===== 3. WHO DID WHAT - the timeline, legible =====
+    // First, pull out the human-facing exchange (Jira Q&A, approvals) and show
+    // it as a readable conversation. This spans ALL runs of the ticket, not just
+    // the latest - the dialogue with the author is about the ticket, and usually
+    // happens on the first comprehension attempt, so showing only the latest
+    // run's events would hide the whole conversation.
+    var convSource = [];
+    (t.runs || [t]).forEach(function (r) {
+      (r.timeline || []).forEach(function (e) { convSource.push(e); });
+    });
+    var convo = convSource.filter(function (e) { return _convoText(e) !== null; });
+    convo.sort(function (a, b) { return String(a.at || "").localeCompare(String(b.at || "")); });
+    if (convo.length) {
+      d.appendChild(el("div", "sub-head", "Conversation & approvals"));
+      var cv = el("div", "convo");
+      convo.forEach(function (e) {
+        var who = (e.actor || "").toLowerCase();
+        var isHuman = who === "author" || who === "human" || who === "reviewer" ||
+                      /reply|grant|approv/.test((e.kind || "").toLowerCase());
+        var row = el("div", "cv-msg" + (isHuman ? " them" : " agent"));
+        var head = el("div", "cv-head");
+        head.appendChild(el("span", "cv-who", e.actor || "?"));
+        head.appendChild(el("span", "cv-kind", _convoKind(e.kind)));
+        head.appendChild(el("span", "cv-at", (e.at || "").replace("T", " ").slice(5, 16)));
+        row.appendChild(head);
+        row.appendChild(el("div", "cv-text", _convoText(e)));
+        cv.appendChild(row);
+      });
+      d.appendChild(cv);
+    }
+
     if (t.timeline && t.timeline.length) {
       d.appendChild(el("div", "sub-head", "Who did what — " + t.timeline.length + " events"));
       var tl = el("div", "timeline");
@@ -394,19 +425,37 @@
       }
     }
 
-    // ===== 4. ARTIFACTS - what the run produced =====
-    if (t.artifacts && t.artifacts.length) {
+    // ===== 4. ARTIFACTS - what the run produced, grouped by run =====
+    // A ticket run 14 times has 14 sets of artifacts. Showing them flat makes
+    // 'context' appear 14 times with no way to tell which run made which. Group
+    // under each run instead, newest first.
+    var runsForArts = (t.runs && t.runs.length > 1) ? t.runs : [t];
+    var anyArts = runsForArts.some(function (r) { return (r.artifacts || []).length; });
+    if (anyArts) {
       d.appendChild(el("div", "sub-head", "Artifacts produced"));
-      var ar = el("div", "timeline");
-      t.artifacts.forEach(function (a) {
-        var row = el("div", "tl-row art");
-        row.appendChild(el("span", "tl-actor", a.kind || "?"));
-        row.appendChild(el("span", "tl-what", a.rel_path || ""));
-        row.appendChild(el("span", "tl-model", a.actor || ""));
-        row.appendChild(put(el("span", "tl-cost"), bytes(a.bytes)));
-        ar.appendChild(row);
+      runsForArts.forEach(function (r, idx) {
+        var arts = r.artifacts || [];
+        if (!arts.length) return;
+        if (runsForArts.length > 1) {
+          var lbl = el("div", "art-run-label");
+          lbl.appendChild(el("span", "art-run-when",
+            (r.started || "").replace("T", " ").slice(5, 16)));
+          lbl.appendChild(el("span", "art-run-status v-" + (r.outcome || "unknown"),
+            r.outcome === "halted" ? "awaiting human" : (r.outcome || "")));
+          lbl.appendChild(el("span", "art-run-n", arts.length + " files"));
+          d.appendChild(lbl);
+        }
+        var ar = el("div", "timeline art-group");
+        arts.forEach(function (a) {
+          var row = el("div", "tl-row art");
+          row.appendChild(el("span", "tl-actor", a.kind || "?"));
+          row.appendChild(el("span", "tl-what", a.rel_path || ""));
+          row.appendChild(el("span", "tl-model", a.actor || ""));
+          row.appendChild(put(el("span", "tl-cost"), bytes(a.bytes)));
+          ar.appendChild(row);
+        });
+        d.appendChild(ar);
       });
-      d.appendChild(ar);
     }
 
     // ===== 5. related discovered tables (governor, etc.) =====
@@ -441,6 +490,37 @@
     }
 
     return d;
+  }
+
+  function _convoText(e) {
+    // Return readable text if this event carries human-facing content, else null.
+    var raw = e.payload;
+    if (raw == null || raw === "") return null;
+    if (typeof raw === "string") {
+      if (raw.charAt(0) === "{" || raw.charAt(0) === "[") {
+        try {
+          var o = JSON.parse(raw);
+          return o.text || o.message || o.question || o.answer || o.reply ||
+                 o.comment || o.body || null;
+        } catch (e2) { return raw; }
+      }
+      return raw;
+    }
+    if (typeof raw === "object") {
+      return raw.text || raw.message || raw.question || raw.answer || raw.reply ||
+             raw.comment || raw.body || null;
+    }
+    return null;
+  }
+
+  function _convoKind(kind) {
+    var k = (kind || "").toLowerCase();
+    if (/question/.test(k)) return "asked";
+    if (/reply|answer/.test(k)) return "answered";
+    if (/approval_request|ask/.test(k)) return "approval needed";
+    if (/grant|approv/.test(k)) return "approved";
+    if (/deny|reject/.test(k)) return "denied";
+    return kind || "";
   }
 
   function _ms(ms) {
@@ -500,31 +580,202 @@
 
   // ---- gate ledger ------------------------------------------------------
 
+  function renderAgentRoster(p) {
+    var host = document.querySelector(".agent-grid");
+    if (!host) return;
+    host.textContent = "";
+    (p.agents || []).forEach(function (a) {
+      var card = el("div", "agent-card panel");
+      var head = el("div", "agent-head");
+      head.appendChild(el("span", "agent-role", a.title || a.role));
+      if (a.stage) head.appendChild(el("span", "agent-stage", a.stage));
+      card.appendChild(head);
+
+      if (a.does) {
+        card.appendChild(el("div", "agent-does", a.does));
+      } else {
+        card.appendChild(el("div", "agent-does agent-undesc",
+          "In the ledger as '" + a.role + "' — no description on file. Add it to AGENT_INFO."));
+      }
+
+      if (a.reads || a.writes) {
+        var io = el("div", "agent-io");
+        if (a.reads) {
+          var rd = el("div", "aio");
+          rd.appendChild(el("span", "aio-l", "reads"));
+          rd.appendChild(el("span", "aio-v", a.reads));
+          io.appendChild(rd);
+        }
+        if (a.writes) {
+          var wr = el("div", "aio");
+          wr.appendChild(el("span", "aio-l", "writes"));
+          wr.appendChild(el("span", "aio-v", a.writes));
+          io.appendChild(wr);
+        }
+        card.appendChild(io);
+      }
+
+      // live stats from the ledger
+      var stats = el("div", "agent-stats");
+      function stat(label, val, unkMsg) {
+        var s = el("div", "astat");
+        s.appendChild(put(el("span", "astat-v"), val, unkMsg));
+        s.appendChild(el("span", "astat-l", label));
+        stats.appendChild(s);
+      }
+      stat("calls", num(a.calls));
+      stat("cost", money(a.cost_usd), "not recorded");
+      stat("tokens in", num(a.tokens_in), "not recorded");
+      stat("tokens out", num(a.tokens_out), "not recorded");
+      card.appendChild(stats);
+
+      if (a.models && a.models.length) {
+        var m = el("div", "agent-models");
+        a.models.forEach(function (mo) { m.appendChild(el("span", "amodel", mo)); });
+        card.appendChild(m);
+      }
+      host.appendChild(card);
+    });
+  }
+
+  function renderArchitecture(p) {
+    var host = document.querySelector(".arch");
+    if (!host || host.dataset.built) return;
+    host.dataset.built = "1";
+    var order = p.gate_order || [];
+    var info = p.gate_info || {};
+
+    // 1. the pipeline, as a flow of gates
+    host.appendChild(el("div", "arch-h", "The pipeline"));
+    host.appendChild(el("div", "arch-p",
+      "A ticket flows left to right through nine gates. Each gate can pass it on, " +
+      "halt it for a human, or fail it. A halt is the system working — it caught " +
+      "something it could not safely proceed through."));
+    var flow = el("div", "arch-flow");
+    order.forEach(function (g, i) {
+      var node = el("div", "arch-node");
+      node.appendChild(el("span", "arch-node-abbr", (GATE_ABBR[g] || g.slice(0, 4).toUpperCase())));
+      node.appendChild(el("span", "arch-node-name", (info[g] || {}).label || g));
+      flow.appendChild(node);
+      if (i < order.length - 1) flow.appendChild(el("span", "arch-arrow", "\u2192"));
+    });
+    host.appendChild(flow);
+    var end = el("div", "arch-ends");
+    end.appendChild(el("span", "arch-end merged", "\u2192 merged (PR opened)"));
+    end.appendChild(el("span", "arch-end halted", "halted \u2192 waits for a human"));
+    end.appendChild(el("span", "arch-end failed", "failed \u2192 retried"));
+    host.appendChild(end);
+
+    // 2. data flow
+    host.appendChild(el("div", "arch-h", "Data flow"));
+    host.appendChild(el("div", "arch-p",
+      "The VS Code extension is the only component that can call a model " +
+      "(vscode.lm). The Python loop orchestrates; every step is written to an " +
+      "append-only SQLite ledger. This dashboard is a read-only view of that " +
+      "ledger — it never calls a model and never writes."));
+    var df = el("div", "arch-dataflow");
+    [["Jira", "ticket + acceptance criteria"],
+     ["VS Code extension", "the model gateway (vscode.lm)"],
+     ["Python loop", "orchestrates the 9 gates"],
+     ["ledger.db", "append-only record of everything"],
+     ["this dashboard", "read-only view"]].forEach(function (s, i, arr) {
+      var box = el("div", "df-box");
+      box.appendChild(el("div", "df-name", s[0]));
+      box.appendChild(el("div", "df-note", s[1]));
+      df.appendChild(box);
+      if (i < arr.length - 1) df.appendChild(el("span", "df-arrow", "\u2193"));
+    });
+    host.appendChild(df);
+
+    // 3. RBAC / the governor
+    host.appendChild(el("div", "arch-h", "Guardrails — the governor (RBAC)"));
+    host.appendChild(el("div", "arch-p",
+      "Every tool action an agent takes — every file edit, every shell command — " +
+      "passes through the governor before it runs. The governor enforces the " +
+      "blast radius the lead agent declared: it allows, asks, or denies."));
+    var gov = el("div", "arch-rbac");
+    [["allow", "within the declared blast radius — proceeds automatically"],
+     ["ask", "borderline — pauses for human confirmation"],
+     ["deny", "outside the blast radius — blocked outright"]].forEach(function (d) {
+      var row = el("div", "rbac-row v-" + d[0]);
+      row.appendChild(el("span", "rbac-decision", d[0]));
+      row.appendChild(el("span", "rbac-desc", d[1]));
+      row.appendChild(put(el("span", "rbac-count"),
+        (p.governor && p.governor[d[0]] != null) ? num(p.governor[d[0]]) : null,
+        "not recorded"));
+      gov.appendChild(row);
+    });
+    host.appendChild(gov);
+    host.appendChild(el("div", "arch-foot",
+      "Because the governor sits on every action, an autonomous agent cannot " +
+      "touch anything the lead did not sanction — and every allow/ask/deny is in " +
+      "the ledger, visible per run."));
+  }
+
+  function renderGateLegend(p) {
+    var host = document.querySelector(".gate-legend");
+    if (!host) return;
+    host.textContent = "";
+    (p.gate_order || []).forEach(function (g, i) {
+      var info = (p.gate_info || {})[g] || {};
+      var item = el("div", "gl-item");
+      item.appendChild(el("span", "gl-abbr", (GATE_ABBR[g] || g.slice(0,4).toUpperCase())));
+      item.appendChild(el("span", "gl-name", info.label || g));
+      if (info.desc) item.appendChild(el("span", "gl-desc", info.desc));
+      host.appendChild(item);
+    });
+  }
+
   function renderGates(p) {
     var body = $("#gate-body");
+    if (!body) return;
     body.textContent = "";
-    var max = Math.max.apply(null, (p.gate_stats || []).map(function (g) {
-      return g.ran || 0;
-    }).concat([1]));
 
     (p.gate_stats || []).forEach(function (g) {
       var tr = document.createElement("tr");
-      tr.appendChild(el("td", null, GATE_ABBR[g.name] || g.name));
+      tr.className = "gate-tr";
 
-      var ran = el("td");
-      var bar = el("span", "bar");
-      bar.style.width = Math.round((g.ran / max) * 54) + "px";
-      ran.appendChild(bar);
-      ran.appendChild(document.createTextNode(" " + g.ran));
-      tr.appendChild(ran);
+      // name + description
+      var nameCell = el("td", "gate-name-cell");
+      nameCell.appendChild(el("div", "gate-full", g.label || g.name));
+      if (g.desc) nameCell.appendChild(el("div", "gate-desc", g.desc));
+      tr.appendChild(nameCell);
 
+      tr.appendChild(put(el("td"), num(g.ran), "never ran in scope"));
       tr.appendChild(put(el("td"), num(g.pass)));
+
       var caught = el("td", "caught" + (g.caught ? " has" : ""));
       caught.textContent = g.caught;
       caught.title = g.caught
-        ? g.name + " stopped " + g.caught + " run(s) that every upstream gate let through"
+        ? g.label + " stopped " + g.caught + " run(s) that every upstream gate let through"
         : "this gate has never stopped anything in scope";
       tr.appendChild(caught);
+
+      // score spread: min - median - max as a mini range bar
+      var scoreCell = el("td", "score-cell");
+      if (g.score_med != null) {
+        var wrap = el("div", "score-range");
+        wrap.title = "min " + g.score_min + " · median " + g.score_med + " · max " + g.score_max;
+        var lo = el("span", "sr-lo", g.score_min.toFixed(2));
+        var track = el("span", "sr-track");
+        var span = el("span", "sr-span");
+        // position span from min to max across a 0..threshold(1.0)-ish scale
+        var scale = Math.max(1, g.score_max);
+        span.style.left = (g.score_min / scale * 100) + "%";
+        span.style.width = ((g.score_max - g.score_min) / scale * 100) + "%";
+        track.appendChild(span);
+        var medDot = el("span", "sr-med");
+        medDot.style.left = (g.score_med / scale * 100) + "%";
+        track.appendChild(medDot);
+        wrap.appendChild(lo);
+        wrap.appendChild(track);
+        wrap.appendChild(el("span", "sr-hi", g.score_max.toFixed(2)));
+        scoreCell.appendChild(wrap);
+      } else {
+        scoreCell.appendChild(unk("no scores recorded"));
+      }
+      tr.appendChild(scoreCell);
+
       tr.appendChild(put(el("td"), pct(g.pass_rate), "never ran in scope"));
       body.appendChild(tr);
     });
@@ -1057,6 +1308,9 @@
     renderWalk(payload);
     renderTaxonomy(payload);
     renderGates(payload);
+    renderGateLegend(payload);
+    renderAgentRoster(payload);
+    renderArchitecture(payload);
     renderAgents(payload);
     renderPrompts(payload);
     renderModels(payload);

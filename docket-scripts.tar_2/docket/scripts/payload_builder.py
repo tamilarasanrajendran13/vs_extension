@@ -93,6 +93,9 @@ CONTRACT: dict[str, dict[str, Any]] = {
             "actor": "actor",
             "kind": "kind",
             "summary": "summary",
+            "target": None,
+            "payload": None,
+            "parent": None,
             "tokens_in": "tokens_in",
             "tokens_out": "tokens_out",
             "cost_usd": "cost_usd",
@@ -146,6 +149,138 @@ GATE_ORDER = [
     "qa",
     "mutation",
 ]
+
+# Full names and one-line descriptions. The walk shows terse marks; this is what
+# COMP / CTX / SPEC actually mean, surfaced on the Gates tab and on hover. If
+# your pipeline's gate names differ, edit GATE_ORDER above and this map together.
+GATE_INFO = {
+    "comprehension": ("Comprehension",
+        "Is the ticket clear enough to build from? Checks the acceptance "
+        "criteria are testable and unambiguous before any work starts."),
+    "context": ("Context",
+        "Has the blast radius been mapped and ratified? Confirms which files "
+        "and boundaries the change may touch."),
+    "plan": ("Plan",
+        "Is there a sound implementation plan? Often a blind bake-off judged "
+        "against the frozen acceptance criteria."),
+    "test-spec": ("Test spec",
+        "Are the tests specified before code? Freezes what 'done' means so the "
+        "implementation cannot move the goalposts."),
+    "develop": ("Develop",
+        "The implementation itself - code written against the frozen plan and "
+        "test spec."),
+    "review": ("Review",
+        "Does the change hold up to code review? Correctness, style, and "
+        "adherence to the plan."),
+    "security": ("Security",
+        "Any vulnerabilities introduced? Snyk / dependency and code scanning "
+        "for CVEs and unsafe patterns."),
+    "qa": ("QA",
+        "Does it behave correctly end to end? Functional verification against "
+        "the acceptance criteria."),
+    "mutation": ("Mutation",
+        "Do the tests actually catch bugs? Mutation testing measures whether "
+        "the tests assert values, not just shapes."),
+}
+
+
+def _gate_label(name: str) -> str:
+    info = GATE_INFO.get(name)
+    return info[0] if info else name.replace("-", " ").replace("_", " ").title()
+
+
+# The agent roster: what each agent is FOR, its capability, and where it sits in
+# the pipeline. The ledger records how much each agent ran and cost; this static
+# map records what it MEANS. Names are matched case-insensitively against the
+# actor column; agents present in the ledger but not here still show, with a
+# generic description, so nothing is hidden.
+AGENT_INFO = {
+    "spec": {
+        "title": "Spec agent",
+        "does": "Reads the Jira ticket and judges whether it can be built from. "
+                "Runs the comprehension gate (spec@10), posts clarifying "
+                "questions back to the author, and classifies blockers.",
+        "stage": "comprehension",
+        "reads": "Jira ticket, acceptance criteria",
+        "writes": "comprehension.md, author questions",
+    },
+    "cartographer": {
+        "title": "Cartographer",
+        "does": "Explores the repository with grep/list/read tools to map the "
+                "code around the ticket. Builds the dossier the rest of the "
+                "pipeline reasons over.",
+        "stage": "context",
+        "reads": "repository (read-only tools)",
+        "writes": "dossier / repo map",
+    },
+    "drafter": {
+        "title": "Context drafter",
+        "does": "Turns the cartographer's findings into a ratified context "
+                "document. Requires human sign-off before the plan is built.",
+        "stage": "context",
+        "reads": "dossier",
+        "writes": "context.md (human-ratified)",
+    },
+    "lead": {
+        "title": "Lead agent",
+        "does": "Declares the blast radius - the files and boundaries a change "
+                "may touch - verified against the filesystem. The governor "
+                "enforces this boundary on every edit.",
+        "stage": "context",
+        "reads": "context.md, filesystem",
+        "writes": "blast radius declaration",
+    },
+    "planner": {
+        "title": "Planner",
+        "does": "Produces the implementation plan. Can run a blind bake-off - "
+                "several plans generated and judged without knowing which is "
+                "which.",
+        "stage": "plan",
+        "reads": "context.md, acceptance criteria",
+        "writes": "plan.md",
+    },
+    "judge": {
+        "title": "Judge",
+        "does": "Scores plans (and other bake-offs) blind, against the frozen "
+                "acceptance criteria, to pick the strongest without bias.",
+        "stage": "plan",
+        "reads": "candidate plans",
+        "writes": "scores, selection",
+    },
+    "developer": {
+        "title": "Developer",
+        "does": "Writes the code against the frozen plan and test spec. Every "
+                "edit passes through the governor for blast-radius enforcement.",
+        "stage": "develop",
+        "reads": "plan.md, test spec, repository",
+        "writes": "code (diff.patch)",
+    },
+    "reviewer": {
+        "title": "Reviewer",
+        "does": "Reviews the implementation for correctness, style, and "
+                "adherence to the plan.",
+        "stage": "review",
+        "reads": "diff, plan.md",
+        "writes": "review verdict",
+    },
+    "security": {
+        "title": "Security agent",
+        "does": "Scans the change for vulnerabilities - Snyk and dependency/code "
+                "analysis for CVEs and unsafe patterns.",
+        "stage": "security",
+        "reads": "diff, dependencies",
+        "writes": "security findings (snyk.json)",
+    },
+    "qa": {
+        "title": "QA agent",
+        "does": "Verifies end-to-end behaviour against the acceptance criteria, "
+                "then mutation-tests to confirm the tests assert values, not "
+                "just shapes.",
+        "stage": "qa",
+        "reads": "acceptance criteria, tests",
+        "writes": "qa evidence, mutation results",
+    },
+}
 
 # The outcomes the dashboard has purpose-built handling and colour for. This is
 # NOT the list of outcomes that can appear - a ledger may record 'escalated',
@@ -618,6 +753,14 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
     gates_by_run: dict = {}
     for g in gates:
         gates_by_run.setdefault(_key(g), []).append(g)
+    # Artifacts key by run when the table carries run_id, mirroring gates and
+    # events. Same ticket run 14 times means 14 sets of artifacts; joining by
+    # ticket alone dumps all 58 into one flat list where you cannot tell run 1's
+    # context from run 3's. _key falls back to ticket for ledgers without the
+    # run column.
+    arts_by_run: dict = {}
+    for a in artifacts or []:
+        arts_by_run.setdefault(_key(a), []).append(a)
     arts_by_ticket: dict[str, list[dict]] = {}
     for a in artifacts or []:
         arts_by_ticket.setdefault(a["issue"], []).append(a)
@@ -681,7 +824,8 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
             # defeat the only thing this file exists to do.
             "timeline": timeline[:event_limit],
             "timeline_truncated": truncated or None,
-            "artifacts": arts_by_ticket.get(r["issue"], []) if has_artifacts else None,
+            "artifacts": arts_by_run.get(rk, []) if has_artifacts
+                         else (None if not has_artifacts else []),
         }
         run_dict["narrative"] = _narrative(run_dict)
         tickets.append(run_dict)
@@ -747,6 +891,8 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
         "generated_by": f"docket payload_builder {BUILDER_VERSION}",
         "scope": {"release": release, "project": project},
         "gate_order": GATE_ORDER,
+        "gate_info": {k: {"label": v[0], "desc": v[1]}
+                      for k, v in GATE_INFO.items()},
         "totals": totals,
         "trend": trend,
         "hero": _hero(trend, release, hero),
@@ -756,7 +902,8 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
         "tickets": tickets,
         "gate_stats": _gate_stats(tickets),
         "taxonomy": _taxonomy(tickets),
-        "agents": _agents(events),
+        "agents": _agents(events, tickets),
+        "governor": _governor_rollup(con),
         "prompt_versions": _prompt_versions(events, tickets),
         "models": _models(events),
         "artifact_kinds": _artifact_kinds(artifacts),
@@ -1160,46 +1307,90 @@ def _walk(rows: list[dict], stopped_at: str | None, outcome: str | None) -> list
 
 
 def _gate_stats(tickets: list[dict]) -> list[dict]:
+    # Flatten to every run so a gate's pass/fail/score reflects all attempts,
+    # not just each ticket's latest. Same reason as _taxonomy: 13 comprehension
+    # halts vanish if you only read the run that finally merged.
+    runs = []
+    for t in tickets:
+        runs.extend(t.get("runs") or [t])
+
     out = []
     for i, name in enumerate(GATE_ORDER):
+        info = GATE_INFO.get(name)
         row = {"name": name, "order": i + 1,
-               "pass": 0, "fail": 0, "unknown": 0, "never_reached": 0, "halts": 0}
-        for t in tickets:
-            g = next((x for x in t["gates"] if x["name"] == name), None)
+               "label": _gate_label(name),
+               "desc": info[1] if info else None,
+               "pass": 0, "fail": 0, "unknown": 0, "never_reached": 0, "halts": 0,
+               "scores": []}
+        for r in runs:
+            g = next((x for x in r["gates"] if x["name"] == name), None)
             if not g:
                 continue
             row[g["result"]] = row.get(g["result"], 0) + 1
-            if t.get("stopped_at") == name and t.get("outcome") == "halted":
+            if g.get("score") is not None:
+                row["scores"].append(g["score"])
+            if r.get("stopped_at") == name and r.get("outcome") == "halted":
                 row["halts"] += 1
         ran = row["pass"] + row["fail"]
         # What this gate stopped that every gate upstream of it let through.
         # Counted off the RUN's disposition, not the gate result - a halt and a
         # fail both leave result='fail' on the gate, so summing the two would
         # count the same stop twice.
-        row["caught"] = sum(1 for t in tickets
-                            if t.get("stopped_at") == name
-                            and t.get("outcome") in ("halted", "failed"))
+        row["caught"] = sum(1 for r in runs
+                            if r.get("stopped_at") == name
+                            and r.get("outcome") in ("halted", "failed"))
         row["ran"] = ran
         row["pass_rate"] = round(row["pass"] / ran, 4) if ran else None
+        sc = row.pop("scores")
+        if sc:
+            row["score_min"] = round(min(sc), 3)
+            row["score_med"] = round(_median(sc), 3)
+            row["score_max"] = round(max(sc), 3)
+        else:
+            row["score_min"] = row["score_med"] = row["score_max"] = None
         out.append(row)
     return out
 
 
 def _taxonomy(tickets: list[dict]) -> list[dict]:
-    """Why runs stop. The failure taxonomy, straight off the runs table."""
+    """
+    Why runs stop. Counted across EVERY run, not just each ticket's latest.
+
+    A ticket run 14 times usually merges on the last attempt, so reading only
+    the latest run's disposition reports zero stops even when 13 earlier runs
+    halted at comprehension. That empties the single most useful panel on the
+    board. Walk every run.
+    """
     tally: dict[tuple, int] = {}
     for t in tickets:
-        if t["outcome"] in ("merged", "running", None):
-            continue
-        key = (t.get("stopped_at") or "unknown", t.get("reason") or "no reason recorded",
-               t["outcome"])
-        tally[key] = tally.get(key, 0) + 1
+        for r in (t.get("runs") or [t]):
+            if r.get("outcome") in ("merged", "running", None):
+                continue
+            key = (r.get("stopped_at") or "unknown",
+                   r.get("reason") or "no reason recorded",
+                   r["outcome"])
+            tally[key] = tally.get(key, 0) + 1
     rows = [{"gate": g, "reason": r, "outcome": o, "count": n}
             for (g, r, o), n in tally.items()]
     return sorted(rows, key=lambda r: -r["count"])
 
 
-def _agents(events: list[dict]) -> list[dict]:
+def _governor_rollup(con) -> dict | None:
+    """allow/ask/deny counts from governor_decisions, if the table exists. Powers
+    the RBAC panel on the Architecture tab. None if the ledger has no governor."""
+    try:
+        cols = _columns(con, "governor_decisions")
+    except Exception:
+        return None
+    if not cols or "decision" not in cols:
+        return None
+    out = {}
+    for row in con.execute("SELECT decision, COUNT(*) FROM governor_decisions GROUP BY decision"):
+        out[str(row[0])] = row[1]
+    return out or None
+
+
+def _agents(events: list[dict], tickets: list[dict] = None) -> list[dict]:
     tally: dict[str, dict] = {}
     for e in events:
         a = e.get("actor") or "unknown"
@@ -1213,10 +1404,23 @@ def _agents(events: list[dict]) -> list[dict]:
             t["models"].add(e["model"])
     out = []
     for t in tally.values():
-        out.append({"role": t["role"], "calls": t["calls"],
-                    "tokens_in": _sum(t["_in"]), "tokens_out": _sum(t["_out"]),
-                    "cost_usd": _sum(t["_cost"]), "models": sorted(t["models"])})
-    return sorted(out, key=lambda r: -(r["cost_usd"] or 0))
+        info = AGENT_INFO.get(t["role"].lower(), {})
+        out.append({
+            "role": t["role"], "calls": t["calls"],
+            "tokens_in": _sum(t["_in"]), "tokens_out": _sum(t["_out"]),
+            "cost_usd": _sum(t["_cost"]), "models": sorted(t["models"]),
+            # static knowledge - what this agent is FOR. None if the agent is in
+            # the ledger but not in AGENT_INFO (still shown, just undescribed).
+            "title": info.get("title"),
+            "does": info.get("does"),
+            "stage": info.get("stage"),
+            "reads": info.get("reads"),
+            "writes": info.get("writes"),
+        })
+    # roster order follows the pipeline where known, then by cost
+    stage_order = {name: i for i, name in enumerate(GATE_ORDER)}
+    return sorted(out, key=lambda r: (
+        stage_order.get(r.get("stage"), 99), -(r["cost_usd"] or 0)))
 
 
 # --------------------------------------------------------------------------

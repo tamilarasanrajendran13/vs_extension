@@ -110,6 +110,10 @@
         </div>
       </div>
       <div class="sub" style="padding-top:10px">Click any run for its gate evidence, agent timeline, artifacts and every other table this ledger holds about it.</div>
+      <details class="gate-legend-wrap">
+        <summary>What do COMP, CTX, SPEC… mean?</summary>
+        <div class="gate-legend"></div>
+      </details>
     </div>
   </section>
 
@@ -118,12 +122,12 @@
     <div class="section">
       <div class="section-head">
         <h2>Gate ledger</h2>
-        <div class="sub">What each gate caught that everything upstream let through.</div>
+        <div class="sub">What each gate caught that everything upstream let through. Each gate's full name and purpose is shown in the first column.</div>
       </div>
       <div class="panel">
         <table class="grid">
           <thead>
-            <tr><th>Gate</th><th>Ran</th><th>Passed</th><th>Caught</th><th>Pass rate</th></tr>
+            <tr><th>Gate</th><th>Ran</th><th>Passed</th><th>Caught</th><th>Score (min–med–max)</th><th>Pass rate</th></tr>
           </thead>
           <tbody id="gate-body"></tbody>
         </table>
@@ -207,6 +211,28 @@
           <tbody id="artifact-body"></tbody>
         </table>
       </div>
+    </div>
+  </section>
+
+  <!-- ================= AGENTS ================= -->
+  <section class="page" id="page-agents" data-title="Agents">
+    <div class="section">
+      <div class="section-head">
+        <h2>The agent roster</h2>
+        <div class="sub">Every agent in the pipeline — what it does, what it reads and writes, and how much it has run.</div>
+      </div>
+      <div class="agent-grid"></div>
+    </div>
+  </section>
+
+  <!-- ================= ARCHITECTURE ================= -->
+  <section class="page" id="page-architecture" data-title="Architecture">
+    <div class="section">
+      <div class="section-head">
+        <h2>How Docket works</h2>
+        <div class="sub">The pipeline, the data flow, and the guardrails. Static reference — the same regardless of which ledger you loaded.</div>
+      </div>
+      <div class="arch"></div>
     </div>
   </section>
 
