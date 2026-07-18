@@ -442,6 +442,8 @@ def probe(con: sqlite3.Connection) -> dict[str, Any]:
         cols = _columns(con, table) if present else set()
         matched, missing = {}, []
         for want, actual in spec["columns"].items():
+            if actual is None:
+                continue  # deliberately unmapped; this ledger has no such column
             if actual in cols:
                 matched[want] = actual
             else:
@@ -468,9 +470,11 @@ def _select(con: sqlite3.Connection, logical: str, where: str = "", params=()) -
     have = _columns(con, table)
     picks, nulls = [], []
     for want, actual in spec["columns"].items():
-        if actual in have:
+        if actual is not None and actual in have:
             picks.append(f'"{actual}" AS "{want}"')
         else:
+            # actual is None (deliberately unmapped) OR the column is absent.
+            # Either way the field comes back None - unknown, never invented.
             nulls.append(want)
     pk = spec.get("pk")
     if pk and pk in have:
@@ -583,8 +587,16 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
     tickets = []
     for r in runs:
         evs = by_ticket.get(r["issue"], [])
-        walk = _walk(gates_by_ticket.get(r["issue"], []), r.get("stopped_at"),
-                     r.get("outcome"))
+        grows = gates_by_ticket.get(r["issue"], [])
+        stopped_at = r.get("stopped_at")
+        if stopped_at is None:
+            # No explicit stop-gate column: the last failing gate in pipeline
+            # order is where the run stopped.
+            failed = [g["name"] for g in grows
+                      if g.get("result") == "fail" and g.get("name") in GATE_ORDER]
+            if failed:
+                stopped_at = max(failed, key=lambda n: GATE_ORDER.index(n))
+        walk = _walk(grows, stopped_at, r.get("outcome"))
         timeline = sorted(evs, key=lambda e: str(e.get("at") or ""))
         truncated = max(0, len(timeline) - event_limit)
         tickets.append({
@@ -593,14 +605,20 @@ def _build(con, release, project, event_limit, max_rows=MAX_ROWS_PER_TABLE,
             "release": r.get("release"),
             "project": r.get("project"),
             "outcome": r.get("outcome"),
-            "stopped_at": r.get("stopped_at"),
+            "stopped_at": stopped_at,
             "reason": r.get("reason"),
             "started": r.get("started"),
             "ended": r.get("ended"),
             "cycle_hours": _hours(r.get("started"), r.get("ended")),
-            "cost_usd": _sum(e.get("cost_usd") for e in evs),
-            "tokens_in": _sum(e.get("tokens_in") for e in evs),
-            "tokens_out": _sum(e.get("tokens_out") for e in evs),
+            # Prefer the run's own recorded cost/tokens when this ledger keeps
+            # them per-ticket on runs; fall back to summing events otherwise. A
+            # recorded 0.0 is a real zero and wins over the sum.
+            "cost_usd": r.get("cost_usd") if r.get("cost_usd") is not None
+                        else _sum(e.get("cost_usd") for e in evs),
+            "tokens_in": r.get("tokens_in") if r.get("tokens_in") is not None
+                         else _sum(e.get("tokens_in") for e in evs),
+            "tokens_out": r.get("tokens_out") if r.get("tokens_out") is not None
+                          else _sum(e.get("tokens_out") for e in evs),
             "gates": walk,
             # The drill-down. Capped, because a release with 400 tickets would
             # otherwise produce a report too big to email - which would quietly
@@ -1058,6 +1076,19 @@ def _self_test() -> int:
           len(p3["ledger_shape"]["tables"]["runs"]["missing"]) > 0)
     check("thin ledger costs are unknown", p3["tickets"][0]["cost_usd"] is None)
 
+    # a CONTRACT column mapped to None must degrade to unknown, never crash,
+    # and must not count as a missing column in the shape report
+    saved = CONTRACT["runs"]["columns"]["summary"]
+    CONTRACT["runs"]["columns"]["summary"] = None
+    try:
+        pN = build(db)
+        check("None-mapped column -> field is None", pN["tickets"][0]["summary"] is None)
+        check("None-mapped column is not 'missing'",
+              "summary -> None" not in
+              " ".join(pN["ledger_shape"]["tables"]["runs"]["missing"]))
+    finally:
+        CONTRACT["runs"]["columns"]["summary"] = saved
+
     # ---- optional tables: absent, empty and populated are THREE facts
     check("artifacts present -> list", isinstance(p["tickets"][0]["artifacts"], list))
     check("artifact kinds rolled up", p["artifact_kinds"] is not None)
@@ -1204,7 +1235,12 @@ def main() -> int:
             con.close()
         print(f"ledger: {a.db}\n")
         for logical, info in shape["tables"].items():
-            mark = "ok " if info["present"] else "MISSING"
+            if not info["present"]:
+                mark = "MISSING"
+            elif info["missing"]:
+                mark = "PARTIAL"   # table is there but some columns did not map
+            else:
+                mark = "ok "
             print(f"[{mark}] {logical:8} -> table '{info['table']}'")
             for want, actual in info["matched"].items():
                 print(f"         {want:15} <- {actual}")
