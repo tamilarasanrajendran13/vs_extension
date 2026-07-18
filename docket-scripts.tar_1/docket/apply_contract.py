@@ -42,9 +42,13 @@ NEW_CONTRACT = '''CONTRACT: dict[str, dict[str, Any]] = {
         "table": "gates",
         "columns": {
             "issue": "ticket_id",
+            "run": "run_id",
             "name": "gate_name",
             "result": "outcome",
             "detail": "details_json",
+            "score": "score",
+            "threshold": "threshold",
+            "duration_ms": "duration_ms",
             "at": "ts",
         },
     },
@@ -53,6 +57,7 @@ NEW_CONTRACT = '''CONTRACT: dict[str, dict[str, Any]] = {
         "pk": "event_id",
         "columns": {
             "issue": "ticket_id",
+            "run": "run_id",
             "at": "ts",
             "actor": "actor",
             "kind": "event_type",
