@@ -935,18 +935,32 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                                           spec, patterns, radius, project, pp, wb,
                                           release, db, say)
 
-        # Developer, reviewer, security, QA, mutation, retro land here.
+        # developer: implement the plan task by task, writing unit tests and
+        # checkpointing each task once its unit tests are green. Only runs once
+        # the acceptance tests are frozen (frozen_tests passed) - the developer
+        # works against them. Prompt: agents/developer.md. Code: scripts/developer.py.
+        impl = None
+        if plan and tests and tests.get("outcome") == "pass":
+            import developer
+            cfg["_plan"] = plan
+            impl = developer.run_developer(tx, cfg, run_id, ticket_id, ticket_text,
+                                           spec, patterns, radius, project, pp, wb,
+                                           release, db, say)
+
+        # Reviewer, security, QA, mutation, retro land here.
         ledger.end_run(run_id, "running", db=db)
         if plan:
             say("")
-            if tests and tests.get("outcome") == "pass":
-                say("  plan agreed and tests frozen - ready for the developer.")
+            if impl and impl.get("outcome") == "pass":
+                say("  implementation complete, unit tests green - ready for review.")
+            elif tests and tests.get("outcome") == "pass":
+                say("  tests frozen. implementation incomplete - see the gates.")
             else:
                 say("  plan agreed. tests NOT frozen - see the frozen_tests gate.")
         return {"run_id": run_id, "outcome": outcome, "spec": spec,
                 "verdict": verdict, "questions": [],
                 "prerequisites": prerequisites, "context_gaps": context_gaps,
-                "radius": radius, "plan": plan, "tests": tests}
+                "radius": radius, "plan": plan, "tests": tests, "impl": impl}
 
     except Exception as e:
         try:
