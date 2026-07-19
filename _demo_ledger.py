@@ -35,11 +35,16 @@ _T = "2026-07-10T09:{:02d}:00"
 
 def _runs():
     return [
-        dict(__pk__=1, issue="ONETEST-71", summary="Add mainframe source to OneTest",
+        dict(__pk__=1, issue="ONETEST-101", summary="Add mainframe source to OneTest",
              project="onetest", release="R2025.10", outcome="merged",
              stopped_at=None, reason=None, failure_class=None,
              started=_T.format(0), ended=_T.format(50),
              cost_usd=None, tokens_in=12000, tokens_out=3400),
+        dict(__pk__=5, issue="ONETEST-71", summary="Backfill legacy source ids",
+             project="onetest", release="R2025.10", outcome="merged",
+             stopped_at=None, reason=None, failure_class=None,
+             started=_T.format(1), ended=_T.format(45),
+             cost_usd=None, tokens_in=8000, tokens_out=2100),
         dict(__pk__=2, issue="ONETEST-72", summary="Ambiguous acceptance criteria",
              project="onetest", release="R2025.10", outcome="halted",
              stopped_at="comprehension", reason="ambiguous_ticket",
@@ -73,7 +78,9 @@ def _gate(issue, name, result, i, score=None, threshold=0.8):
 
 def _gates():
     g = []
-    # ONETEST-71 merged: all nine pass
+    # merged tickets: all nine pass
+    for i, name in enumerate(_FULL):
+        g.append(_gate("ONETEST-101", name, "pass", i))
     for i, name in enumerate(_FULL):
         g.append(_gate("ONETEST-71", name, "pass", i))
     # ONETEST-72 halted at comprehension (gate found it, run is halted)
@@ -96,14 +103,16 @@ def _ev(issue, i, actor, model, pv, cost):
 
 def _events():
     e = [
-        _ev("ONETEST-71", 1, "spec", "claude-sonnet-4.6", "spec@3", 0.10),
-        _ev("ONETEST-71", 2, "planner", "gpt-4.1", "plan@2", 0.12),
-        _ev("ONETEST-71", 3, "developer", "claude-sonnet-4.6", "dev@1", 0.15),
-        _ev("ONETEST-71", 4, "reviewer", "claude-sonnet-4.6", "review@1", 0.05),
-        _ev("ONETEST-72", 5, "spec", "claude-sonnet-4.6", "spec@3", 0.03),
-        _ev("ONETEST-73", 6, "developer", "gpt-4.1", "dev@1", 0.11),
-        _ev("ONETEST-73", 7, "reviewer", "claude-sonnet-4.6", "review@1", 0.10),
-        _ev("ONETEST-74", 8, "planner", "gpt-4.1", "plan@2", 0.05),
+        _ev("ONETEST-101", 1, "spec", "claude-sonnet-4.6", "spec@3", 0.10),
+        _ev("ONETEST-101", 2, "planner", "gpt-4.1", "plan@2", 0.12),
+        _ev("ONETEST-101", 3, "developer", "claude-sonnet-4.6", "dev@1", 0.15),
+        _ev("ONETEST-101", 4, "reviewer", "claude-sonnet-4.6", "review@1", 0.05),
+        _ev("ONETEST-71", 5, "developer", "claude-sonnet-4.6", "dev@1", 0.09),
+        _ev("ONETEST-71", 6, "reviewer", "gpt-4.1", "review@1", 0.06),
+        _ev("ONETEST-72", 7, "spec", "claude-sonnet-4.6", "spec@3", 0.03),
+        _ev("ONETEST-73", 8, "developer", "gpt-4.1", "dev@1", 0.11),
+        _ev("ONETEST-73", 9, "reviewer", "claude-sonnet-4.6", "review@1", 0.10),
+        _ev("ONETEST-74", 10, "planner", "gpt-4.1", "plan@2", 0.05),
     ]
     for i, ev in enumerate(e, 1):
         ev["__pk__"] = i
@@ -112,9 +121,9 @@ def _events():
 
 def _artifacts():
     return [
-        dict(issue="ONETEST-71", kind="evidence", rel_path="evidence/report.html",
+        dict(issue="ONETEST-101", kind="evidence", rel_path="evidence/report.html",
              actor="qa", sha256="a" * 64, bytes=2048, at=_T.format(48)),
-        dict(issue="ONETEST-71", kind="plan", rel_path="plan/plan.md",
+        dict(issue="ONETEST-101", kind="plan", rel_path="plan/plan.md",
              actor="planner", sha256="b" * 64, bytes=1024, at=_T.format(20)),
         dict(issue="ONETEST-73", kind="evidence", rel_path="evidence/fail.html",
              actor="qa", sha256="c" * 64, bytes=512, at=_T.format(29)),
@@ -183,14 +192,14 @@ def _write_discovered(con):
     # holds regardless of what the curated tables call their key.
     con.execute("DROP TABLE IF EXISTS governor_decisions")
     con.execute("CREATE TABLE governor_decisions (ticket TEXT, decision TEXT, ts TEXT)")
-    gd = [("ONETEST-71", "allow"), ("ONETEST-71", "allow"), ("ONETEST-71", "ask"),
+    gd = [("ONETEST-101", "allow"), ("ONETEST-101", "allow"), ("ONETEST-101", "ask"),
           ("ONETEST-72", "deny"), ("ONETEST-72", "allow"), ("ONETEST-73", "ask")]
     for i, (tk, dec) in enumerate(gd):
         con.execute("INSERT INTO governor_decisions VALUES (?,?,?)", (tk, dec, _T.format(i)))
 
     con.execute("DROP TABLE IF EXISTS tool_calls")
     con.execute("CREATE TABLE tool_calls (ticket TEXT, tool TEXT, ts TEXT)")
-    tc = [("ONETEST-71", "grep"), ("ONETEST-71", "read"), ("ONETEST-73", "list")]
+    tc = [("ONETEST-101", "grep"), ("ONETEST-101", "read"), ("ONETEST-73", "list")]
     for i, (tk, tl) in enumerate(tc):
         con.execute("INSERT INTO tool_calls VALUES (?,?,?)", (tk, tl, _T.format(i)))
 
