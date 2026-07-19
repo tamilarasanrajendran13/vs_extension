@@ -71,7 +71,15 @@ def _py_files(repo):
 
 def _is_test_file(path):
     n = Path(path).name
-    return n.startswith("test_") or n.endswith("_test.py") or "test" in Path(path).parts
+    # A real, pytest-discoverable test file. A .py that merely lives under a
+    # test/ directory (fixtures, helpers, conftest, YAML-runner glue) is NOT a
+    # unit test - counting it as one is what made a test-less repo look tested.
+    return n.startswith("test_") or n.endswith("_test.py")
+
+
+def _in_test_tree(path):
+    parts = set(Path(path).parts)
+    return bool(parts & {"test", "tests"})
 
 
 def detect(repo):
@@ -108,7 +116,7 @@ def enumerate_units(repo):
     repo = Path(repo)
     units = []
     for f in _py_files(repo):
-        if _is_test_file(f):
+        if _is_test_file(f) or _in_test_tree(f):
             continue
         try:
             src = f.read_text(encoding="utf-8")
