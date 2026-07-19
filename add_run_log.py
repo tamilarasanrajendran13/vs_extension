@@ -188,6 +188,11 @@ A2_NEW = '''        raise
 def _self_test() -> int:'''
 
 
+A3_OLD = '''    ok.append(("and with who wrote it", {a["actor"] for a in arts} == {"jira", "spec"}))'''
+
+A3_NEW = '''    ok.append(("and with who wrote it", {a["actor"] for a in arts} == {"jira", "spec", "system"}))'''
+
+
 def main():
     loop = os.path.join(HERE, "loop.py")
     if not os.path.exists(loop):
@@ -230,6 +235,15 @@ def main():
             return 3
     else:
         print("  = log artifact finally already present")
+
+    if '{"jira", "spec", "system"}' not in src:
+        if src.count(A3_OLD) == 1:
+            src = src.replace(A3_OLD, A3_NEW); changed = True
+            print("  + updated the artifact-author self-test to include the log's 'system' author")
+        else:
+            print("  = artifact-author assertion not found (self-test may differ); skipped")
+    else:
+        print("  = artifact-author assertion already updated")
 
     if changed:
         with open(loop, "w", encoding="utf-8") as f:
