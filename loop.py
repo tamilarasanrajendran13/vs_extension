@@ -957,12 +957,24 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                                            spec, patterns, radius, project, pp, wb,
                                            release, db, say)
 
-        # Security, QA, mutation, retro land here.
+        # security: a deterministic scanner finds secrets and dangerous patterns
+        # in the changed files, the agent triages what it found (it cannot invent
+        # findings), and the gate is fail-closed. Runs once review has passed.
+        sec = None
+        if review and review.get("outcome") == "pass":
+            import security
+            sec = security.run_security(tx, cfg, run_id, ticket_id, ticket_text,
+                                        spec, patterns, radius, project, pp, wb,
+                                        release, db, say)
+
+        # QA, mutation, retro land here.
         ledger.end_run(run_id, "running", db=db)
         if plan:
             say("")
-            if review and review.get("outcome") == "pass":
-                say("  review passed - ready for security and QA.")
+            if sec and sec.get("outcome") == "pass":
+                say("  security clean - ready for QA.")
+            elif review and review.get("outcome") == "pass":
+                say("  review passed - security raised issues.")
             elif impl and impl.get("outcome") == "pass":
                 say("  implementation complete - review raised issues.")
             elif tests and tests.get("outcome") == "pass":
@@ -973,7 +985,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                 "verdict": verdict, "questions": [],
                 "prerequisites": prerequisites, "context_gaps": context_gaps,
                 "radius": radius, "plan": plan, "tests": tests, "impl": impl,
-                "review": review}
+                "review": review, "security": sec}
 
     except Exception as e:
         try:
