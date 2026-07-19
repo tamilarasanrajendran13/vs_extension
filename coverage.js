@@ -101,14 +101,33 @@ async function run() {
           ", and are 'coverage' + 'pytest' installed for " + cfg.python + "?");
         return;
       }
-      let out;
+      let out2;
       try {
-        out = JSON.parse(stdout);
+        out2 = JSON.parse(stdout);
       } catch (e) {
         channel.appendLine("[could not parse report]\n" + stdout);
         return;
       }
-      renderReport(channel, out);
+      renderReport(channel, out2);
+
+      // If there are untested functions, offer to run the writing loop. That
+      // step needs the model gateway, so it goes through gateway.runLoop.
+      var rep = out2.report || {};
+      if (rep.supported && rep.functions_untested > 0) {
+        vscode.window.showInformationMessage(
+          "Docket: " + rep.functions_untested + " untested function(s) in " +
+          path.basename(repo) + ". Have the unit_tester agent write tests?",
+          "Write tests"
+        ).then(function (pick) {
+          if (pick === "Write tests") {
+            try {
+              require("./gateway").coverageWrite(repo);
+            } catch (e) {
+              channel.appendLine("[could not start writing loop] " + e.message);
+            }
+          }
+        });
+      }
     });
 }
 
