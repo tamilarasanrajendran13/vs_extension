@@ -285,9 +285,11 @@ def _edit_tools(project_path, radius_paths):
 
 
 def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
-                  radius, project, project_path, workbench, release, db, say):
-    """Same signature as run_planner. Receives the agreed plan via cfg carried
-    from run_ticket (see the loop wiring), or via cfg['_plan'].
+                  radius, project, project_path, workbench, release, db, say,
+                  coaching=None):
+    """Same signature as run_planner (plus an optional coaching note a lead uses
+    on a re-drive). Receives the agreed plan via cfg carried from run_ticket, or
+    via cfg['_plan'].
     """
     global _DB
     _DB = db
@@ -326,6 +328,10 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
         while True:
             attempt += 1
             user = _task_prompt(ticket_id, ticket_text, plan, task, patterns, dev_dir)
+            if coaching:
+                user += ("\n\n=== LEAD COACHING (a previous attempt failed) ===\n"
+                         "{}\nFix the CODE accordingly. Do not weaken any test."
+                         .format(coaching))
             # SEAM: the model reads/edits within the radius and writes unit tests,
             # driven by the same agent_loop the planner uses. It cannot escape the
             # radius (the pre_tool_use hook), nor touch the frozen acceptance tests.

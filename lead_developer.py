@@ -171,7 +171,9 @@ def run_lead_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                        radius, project, project_path, workbench, release, db, say,
                        run_worker=None, run_unit=None):
     if run_worker is None:
-        run_worker = _real_worker
+        run_worker = _make_real_worker(tx, run_id, ticket_id, ticket_text, spec,
+                                       patterns, radius, project, project_path,
+                                       workbench, release, db, say)
     if run_unit is None:
         run_unit = _real_unit
 
@@ -306,12 +308,43 @@ def _write_report(dev_dir, slices, results, unit):
 
 # ---------------------------------------------------------------- real worker/unit (seam)
 
-def _real_worker(worker_id, slice_tasks, cfg, coaching):
-    """The real worker: a scoped developer run over this slice, with its own
-    isolated shadow. Phase 2b finalises artifact-scoping and coaching hand-off;
-    the orchestration above is proven with a fake in the self-test.
+def _make_real_worker(tx, run_id, ticket_id, ticket_text, spec, patterns, radius,
+                      project, project_path, workbench, release, db, say):
+    """A real worker: a scoped developer run over one slice. Each attempt gets its
+    OWN shadow (w<N>_a<k>.git). Before a coaching retry, the previous attempt's
+    changes to this slice's files are rolled back to pristine, so every attempt
+    starts from clean and a failed attempt costs nothing - the guarantee that
+    makes coaching safe. Slices are file-disjoint, so a worker's rollback only
+    ever touches its own files, even at cap>1.
     """
-    raise NotImplementedError("real worker wired in Phase 2b; tests inject a fake")
+    attempts = {}  # worker_id -> attempts run so far
+
+    def worker(worker_id, slice_tasks, cfg, coaching):
+        k = attempts.get(worker_id, 0)
+        attempts[worker_id] = k + 1
+
+        if k > 0:  # roll the previous attempt's slice changes back to pristine
+            prev = Path(workbench) / "cache" / project / ticket_id / \
+                "{}_a{}.git".format(worker_id, k - 1)
+            try:
+                checkpointer.Checkpointer.open(prev).rollback("pristine")
+            except Exception as e:
+                say("  {}: could not reset before retry ({}).".format(worker_id, e))
+
+        sub_plan = {"steps": [{"action": t["action"], "file": t["file"],
+                               "what": t["what"]} for t in slice_tasks]}
+        wcfg = dict(cfg)
+        wcfg["_plan"] = sub_plan
+        wcfg["_shadow_name"] = "{}_a{}".format(worker_id, k)
+        result = developer.run_developer(
+            tx, wcfg, run_id, ticket_id, ticket_text, spec, patterns, radius,
+            project, project_path, workbench, release, db, say, coaching=coaching)
+        unit = result.get("unit") or {}
+        return {"outcome": "pass" if result.get("outcome") == "pass" else "fail",
+                "failing": unit.get("raw_tail", ""),
+                "detail": "escalated: {}".format(result.get("tasks_escalated") or [])}
+
+    return worker
 
 
 def _real_unit(project_path, cfg):
@@ -480,6 +513,71 @@ def _self_test():
                                   lambda *_: None, run_worker=make_worker(str(proj6)),
                                   run_unit=green_unit)
         ok("cap=2 reaches the same pass outcome", res6["outcome"] == "pass" and res6["slices"] == 2)
+
+        # --- real worker path: the lead drives an actual developer per slice,
+        # each with its own shadow; the developer itself is proven at 22/22, so
+        # here we spy on it to prove the WIRING (sub-plan, shadow, coaching).
+        proj7 = td / "proj7"; (proj7 / ".git").mkdir(parents=True)
+        real_dev = developer.run_developer
+        calls = []
+
+        def spy(*a, **kw):
+            wcfg = a[1]
+            calls.append({"steps": wcfg["_plan"]["steps"],
+                          "shadow": wcfg.get("_shadow_name"),
+                          "coaching": kw.get("coaching")})
+            for st in wcfg["_plan"]["steps"]:
+                p = proj7 / st["file"]
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("x", encoding="utf-8")
+            return {"outcome": "pass", "unit": {"passed": 1, "failed": 0, "total": 1, "ok": True}}
+
+        led = _FakeLedger(); ledger = led
+        developer.run_developer = spy
+        try:
+            res7 = run_lead_developer(_FakeTx(), cfg, "R7", "OT-7", "t", {}, "", {},
+                                      "onetest", str(proj7), str(wb), None, "db",
+                                      lambda *_: None, run_unit=green_unit)
+        finally:
+            developer.run_developer = real_dev
+        ok("real path drove one developer per slice", len(calls) == 2)
+        ok("each worker got its own isolated shadow",
+           {c["shadow"] for c in calls} == {"w0_a0", "w1_a0"})
+        ok("each developer got a slice-scoped sub-plan",
+           all(len(c["steps"]) >= 1 for c in calls))
+        ok("real path merges to a pass", res7["outcome"] == "pass")
+
+        # --- coaching on the real path: a rollback to pristine precedes the retry
+        proj8 = td / "proj8"; (proj8 / ".git").mkdir(parents=True)
+        rollbacks = []
+
+        class _CPStub:
+            def rollback(self, sha):
+                rollbacks.append(sha)
+                return {"identical": True}
+
+        real_open = checkpointer.Checkpointer.open
+
+        def spy2(*a, **kw):
+            wid = a[1].get("_shadow_name")
+            fail = wid == "w0_a0"  # first attempt of w0 fails, its retry passes
+            return {"outcome": "fail" if fail else "pass",
+                    "unit": {"passed": 0 if fail else 1, "failed": 1 if fail else 0,
+                             "total": 1, "ok": not fail},
+                    "tasks_escalated": ["task-01"] if fail else []}
+
+        led = _FakeLedger(); ledger = led
+        developer.run_developer = spy2
+        checkpointer.Checkpointer.open = staticmethod(lambda shadow: _CPStub())
+        try:
+            res8 = run_lead_developer(_FakeTx(coach=recoach), cfg, "R8", "OT-8", "t",
+                                      {}, "", {}, "onetest", str(proj8), str(wb),
+                                      None, "db", lambda *_: None, run_unit=green_unit)
+        finally:
+            developer.run_developer = real_dev
+            checkpointer.Checkpointer.open = real_open
+        ok("real worker coached to a pass after retry", res8["outcome"] == "pass")
+        ok("rollback to pristine happened before the retry", "pristine" in rollbacks)
 
     passed = sum(1 for _, c in checks if c)
     for name, c in checks:
