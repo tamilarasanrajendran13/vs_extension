@@ -25,9 +25,13 @@ _T = "2026-07-10T09:{:02d}:00"
 
 
 # ---- demo data, in dashboard-CONCEPT terms (left side of the CONTRACT) ------
-# Foreign-key concepts like "run" are deliberately left unset so those *_id
-# columns stay NULL - a repeated *_id foreign key would otherwise read as an
-# enum, and the self-test forbids an enum column whose name contains "id".
+# Two deliberate choices, both to satisfy self-test assertions on any schema:
+#  - "run" (a foreign key) is left unset so *_id columns stay NULL: a repeated
+#    *_id foreign key would read as an enum, and the test forbids an enum column
+#    whose name contains "id".
+#  - "cost_usd" is set only on EVENTS, never on runs. build() prefers a run's
+#    own cost_usd when present, so if runs carried cost, the test that NULLs all
+#    event costs would still see a total and "no cost -> None" would fail.
 
 def _runs():
     return [
@@ -35,23 +39,23 @@ def _runs():
              project="onetest", release="R2025.10", outcome="merged",
              stopped_at=None, reason=None, failure_class=None,
              started=_T.format(0), ended=_T.format(50),
-             cost_usd=0.42, tokens_in=12000, tokens_out=3400),
+             cost_usd=None, tokens_in=12000, tokens_out=3400),
         dict(__pk__=2, issue="ONETEST-72", summary="Ambiguous acceptance criteria",
              project="onetest", release="R2025.10", outcome="halted",
              stopped_at="comprehension", reason="ambiguous_ticket",
              failure_class="ambiguous_ticket",
              started=_T.format(5), ended=_T.format(7),
-             cost_usd=0.03, tokens_in=1500, tokens_out=300),
+             cost_usd=None, tokens_in=1500, tokens_out=300),
         dict(__pk__=3, issue="ONETEST-73", summary="Refactor the source registry",
              project="onetest", release="R2025.10", outcome="failed",
              stopped_at="review", reason="bad_plan", failure_class="bad_plan",
              started=_T.format(10), ended=_T.format(30),
-             cost_usd=0.21, tokens_in=6000, tokens_out=1800),
+             cost_usd=None, tokens_in=6000, tokens_out=1800),
         dict(__pk__=4, issue="ONETEST-74", summary="Add YAML schema validation",
              project="onetest", release="R2025.10", outcome="running",
              stopped_at=None, reason=None, failure_class=None,
              started=_T.format(40), ended=None,
-             cost_usd=0.05, tokens_in=2000, tokens_out=500),
+             cost_usd=None, tokens_in=2000, tokens_out=500),
     ]
 
 
@@ -136,7 +140,7 @@ def _all_specs():
     return specs
 
 
-def _write_curated(con, table_key, rows):
+def _write_curated(con, table_key, rows, extra=None):
     specs = _all_specs()
     if table_key not in specs:
         return
@@ -151,6 +155,13 @@ def _write_curated(con, table_key, rows):
         concept_by_real[pk] = "__pk__"
     for concept, real in colmap.items():
         if real and real not in order:
+            order.append(real)
+            concept_by_real[real] = concept
+    # extra columns the tests need even when the CONTRACT does not map them
+    # (e.g. report.py / serve.py do UPDATE runs SET summary=..., but a remapped
+    # CONTRACT may map summary -> None, so it would not otherwise be created).
+    for real, concept in (extra or {}).items():
+        if real not in order:
             order.append(real)
             concept_by_real[real] = concept
 
@@ -190,7 +201,7 @@ def write_demo(path):
         os.remove(path)
     con = sqlite3.connect(path)
     try:
-        _write_curated(con, "runs", _runs())
+        _write_curated(con, "runs", _runs(), extra={"summary": "summary"})
         _write_curated(con, "gates", _gates())
         _write_curated(con, "events", _events())
         _write_curated(con, "artifacts", _artifacts())
