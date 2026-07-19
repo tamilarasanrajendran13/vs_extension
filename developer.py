@@ -222,10 +222,29 @@ _DB = None
 
 # ---------------------------------------------------------------- orchestration
 
-def _edit_tools(project_path):
+def _in_radius(rel_path, radius_paths):
+    """Is this path inside the developer's boundary? Handles exact files and the
+    'dir/**' glob the unit-test tree is expressed as.
+    """
+    rel = str(rel_path).replace("\\", "/").strip().lstrip("/")
+    for r in radius_paths:
+        if r.endswith("/**"):
+            if rel == r[:-3] or rel.startswith(r[:-2]):
+                return True
+        elif rel == r:
+            return True
+    return False
+
+
+def _edit_tools(project_path, radius_paths):
     """The tools the developer drives through agent_loop - the lead's read tools
     (read/grep/list) plus write. Same callable-per-name shape; agent_loop calls
     tools[action](**args) from the model's JSON.
+
+    write ENFORCES the boundary itself, so the developer cannot escape the radius
+    or touch the frozen acceptance tests even where the pre_tool_use hook is
+    disabled by policy. The refusal is returned as the tool result, so the model
+    sees it and corrects rather than being silently blocked.
     """
     pp = Path(project_path)
 
@@ -238,10 +257,20 @@ def _edit_tools(project_path):
         return "\n\n".join(out)
 
     def write(path, content):
-        f = pp / str(path).replace("\\", "/")
+        rel = str(path).replace("\\", "/").strip().lstrip("/")
+        if rel.startswith(ACCEPTANCE_DIR):
+            return ("REFUSED: {} is a frozen acceptance test. Those define done and "
+                    "cannot be changed. Fix the code, or put a new test under {}/."
+                    .format(rel, UNIT_DIR))
+        if not _in_radius(rel, radius_paths):
+            return ("REFUSED: {} is outside this ticket's blast radius. You may only "
+                    "edit the planned files and {}/. If you truly need this file, say "
+                    "so and finish - do not route around the boundary."
+                    .format(rel, UNIT_DIR))
+        f = pp / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(content, encoding="utf-8")
-        return "wrote {} ({} bytes)".format(path, len(content))
+        return "wrote {} ({} bytes)".format(rel, len(content))
 
     tools = {"read": read, "write": write}
     try:
@@ -271,17 +300,18 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
     dev_dir = Path(workbench) / "development" / (release or "unreleased") / ticket_id
     threshold = ((cfg.get("gates") or {}).get("unit_tests") or {}).get("threshold", 1.0)
     max_retries = ((cfg.get("developer") or {}).get("max_retries", 1))
+    radius_paths = checkpoint_radius(plan, cfg)
 
     # The checkpointer's baseline: the project tree exactly as it is now.
     cp = checkpointer.Checkpointer(
         project_path,
         Path(workbench) / "cache" / project / ticket_id / "checkpoints.git",
-        checkpoint_radius(plan, cfg))
+        radius_paths)
     cp.init_pristine("before {}".format(ticket_id))
     say("  checkpoint baseline saved (pristine).")
 
     A = roster.load(AGENT_NAME, workbench)
-    tools = _edit_tools(project_path)
+    tools = _edit_tools(project_path, radius_paths)
 
     done, escalated = [], []
     for task in tasks:
@@ -425,6 +455,25 @@ def _self_test():
        rad == ["src/mainframe.py", "src/sources.py", "test/unit/**"])
     ok("radius excludes frozen acceptance",
        "test/acceptance/**" not in rad)
+
+    ok("_in_radius: exact file", _in_radius("src/a.py", ["src/a.py"]))
+    ok("_in_radius: glob tree", _in_radius("test/unit/test_a.py", ["test/unit/**"]))
+    ok("_in_radius: rejects outside",
+       not _in_radius("src/b.py", ["src/a.py", "test/unit/**"]))
+
+    with tempfile.TemporaryDirectory() as gd:
+        (Path(gd) / "src").mkdir()
+        gtools = _edit_tools(gd, ["src/mainframe.py", "test/unit/**"])
+        ok("write inside radius allowed",
+           gtools["write"]("src/mainframe.py", "x").startswith("wrote"))
+        ok("write to unit test allowed",
+           gtools["write"]("test/unit/test_a.py", "x").startswith("wrote"))
+        ok("write outside radius refused",
+           gtools["write"]("src/other.py", "x").startswith("REFUSED"))
+        ok("write to frozen acceptance refused",
+           gtools["write"]("test/acceptance/test_a.py", "x").startswith("REFUSED"))
+        ok("refused write creates no file",
+           not (Path(gd) / "src" / "other.py").exists())
 
     green = parse_pytest("collected 3 items\n\nsrc::test_a PASSED\n\n3 passed in 0.1s", 0)
     ok("parse_pytest: all green", green["ok"] and green["passed"] == 3 and green["total"] == 3)
