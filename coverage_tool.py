@@ -141,16 +141,22 @@ def measure_coverage(repo, cfg=None, run=None, read_json=None):
     repo = Path(repo)
     run = run or (lambda cmd, cwd: subprocess.run(
         cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
-    test_cmd = ((cfg or {}).get("coverage") or {}).get("test_command") or [
-        sys.executable, "-m", "pytest", "-q"]
+    # test_command is the MODULE + args run under `coverage run -m ...`.
+    # Default: pytest with quiet output. Override with --test-command.
+    test_command = ((cfg or {}).get("coverage") or {}).get("test_command") or ["pytest", "-q"]
 
     ran = False
-    try:
-        run([sys.executable, "-m", "coverage", "run", "-m"] + test_cmd[2:], repo)
+    note = None
+    run_out = ""
+    if read_json is None:
+        try:
+            (repo / "coverage.json").unlink()          # drop stale data
+        except Exception:
+            pass
+        p1 = run([sys.executable, "-m", "coverage", "run", "-m"] + list(test_command), repo)
+        run_out = (getattr(p1, "stdout", "") or "")
         run([sys.executable, "-m", "coverage", "json", "-o", "coverage.json"], repo)
         ran = True
-    except Exception:
-        ran = False
 
     data = None
     if read_json is not None:
@@ -165,6 +171,21 @@ def measure_coverage(repo, cfg=None, run=None, read_json=None):
 
     covered = {}
     overall = None
+    if not data:
+        low = run_out.lower()
+        tail = "\n".join(run_out.splitlines()[-8:]).strip()
+        if "collected 0 items" in low or "no tests ran" in low:
+            note = ("the test command ran but collected 0 tests - point it at your "
+                    "suite with --test-command \"pytest <path>\"")
+        elif "no module named" in low or "modulenotfounderror" in low:
+            note = "the test command could not import something:\n" + tail
+        elif "error" in low or "errors" in low:
+            note = "the test run reported errors:\n" + tail
+        elif not run_out.strip():
+            note = ("no output from the test command - is 'coverage'/'pytest' on the "
+                    "SAME python you ran this with? try: python -m pytest --version")
+        else:
+            note = "no coverage data produced. test-run output tail:\n" + tail
     if data:
         for fpath, info in (data.get("files") or {}).items():
             rel = fpath
@@ -174,7 +195,7 @@ def measure_coverage(repo, cfg=None, run=None, read_json=None):
                 pass
             covered[rel] = set(info.get("executed_lines") or [])
         overall = ((data.get("totals") or {}).get("percent_covered"))
-    return {"covered": covered, "overall_percent": overall, "ran": ran}
+    return {"covered": covered, "overall_percent": overall, "ran": ran, "note": note}
 
 
 # ------------------------------------------------------------------ gaps
@@ -231,6 +252,7 @@ def report(det, cov, gaps, mut):
             "no Python found; Java/Scala/shell scanning not built yet",
         "has_tests": det["has_python_tests"],
         "coverage_percent": cov["overall_percent"],
+        "coverage_note": cov.get("note"),
         "functions_total": total_units,
         "functions_untested": len(gaps["untested"]),
         "functions_partial": len(gaps["partial"]),
@@ -334,6 +356,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Docket coverage / untested-code scanner")
     ap.add_argument("--repo")
     ap.add_argument("--clone-to")
+    ap.add_argument("--test-command",
+                    help='how to run the suite, e.g. "pytest test/unit" '
+                         '(module + args, run under coverage). Default: "pytest -q"')
     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
@@ -342,7 +367,11 @@ def main(argv=None):
     if not args.repo:
         ap.print_help()
         return
-    out = scan(args.repo, cfg={}, clone_to=args.clone_to)
+    cfg = {}
+    if args.test_command:
+        import shlex
+        cfg = {"coverage": {"test_command": shlex.split(args.test_command)}}
+    out = scan(args.repo, cfg=cfg, clone_to=args.clone_to)
     rep = out["report"]
     if args.json:
         print(json.dumps(out, indent=2, default=str))
@@ -355,6 +384,8 @@ def main(argv=None):
     print("Repo:", out["repo"])
     print("  languages     :", rep["languages"])
     print("  line coverage :", rep["coverage_percent"], "%")
+    if rep.get("coverage_note"):
+        print("  >> " + rep["coverage_note"].replace("\n", "\n     "))
     print("  functions     : {} total, {} untested, {} partial, {} covered".format(
         rep["functions_total"], rep["functions_untested"],
         rep["functions_partial"], rep["functions_covered"]))
