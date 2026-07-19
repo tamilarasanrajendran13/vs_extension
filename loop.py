@@ -967,12 +967,23 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                                         spec, patterns, radius, project, pp, wb,
                                         release, db, say)
 
-        # QA, mutation, retro land here.
+        # qa: the agent designs the mock data, a script generates the volume, and
+        # the FROZEN acceptance tests (locked by test-spec at the start) run for
+        # real as the authoritative gate. Runs once security is clean.
+        qa = None
+        if sec and sec.get("outcome") == "pass":
+            import qa as qa_stage
+            qa = qa_stage.run_qa(tx, cfg, run_id, ticket_id, ticket_text, spec,
+                                 patterns, radius, project, pp, wb, release, db, say)
+
+        # Mutation, retro land here.
         ledger.end_run(run_id, "running", db=db)
         if plan:
             say("")
-            if sec and sec.get("outcome") == "pass":
-                say("  security clean - ready for QA.")
+            if qa and qa.get("outcome") == "pass":
+                say("  QA passed - the frozen acceptance tests are green.")
+            elif sec and sec.get("outcome") == "pass":
+                say("  security clean - QA raised issues.")
             elif review and review.get("outcome") == "pass":
                 say("  review passed - security raised issues.")
             elif impl and impl.get("outcome") == "pass":
@@ -985,7 +996,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                 "verdict": verdict, "questions": [],
                 "prerequisites": prerequisites, "context_gaps": context_gaps,
                 "radius": radius, "plan": plan, "tests": tests, "impl": impl,
-                "review": review, "security": sec}
+                "review": review, "security": sec, "qa": qa}
 
     except Exception as e:
         try:
