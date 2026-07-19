@@ -59,6 +59,25 @@ def _lessons(text):
     return out
 
 
+def attach(A, agent_name, project, workbench):
+    """Fold this agent's ratified memory into its prompt. Wrap a roster.load call
+    in this at each call site:
+
+        A = agent_memory.attach(roster.load(name, wb), name, project, wb)
+
+    A no-op when there is no memory file for this agent+project, so it is always
+    safe to add - behaviour changes only after a human has approved a lesson.
+    """
+    if not A:
+        return A
+    mem = load(agent_name, project, workbench)
+    if not mem:
+        return A
+    B = dict(A)
+    B["prompt"] = (B.get("prompt", "") or "") + mem
+    return B
+
+
 def load(agent_name, project, workbench):
     """The prompt block of this agent's ratified lessons on this project, ready
     to append to the agent's base prompt. Empty string when there is nothing -
@@ -177,6 +196,15 @@ def _self_test():
         # a memory file with the heading but no bullets -> empty block
         ensure_file("qa", "onetest", str(wb))
         ok("empty memory -> empty block", load("qa", "onetest", str(wb)) == "")
+
+        # attach: no-op without lessons, augments prompt with them
+        base = {"name": "reviewer", "model": "judge", "prompt": "BASE"}
+        ok("attach is a no-op for an agent with no memory",
+           attach(base, "developer", "onetest", str(wb))["prompt"] == "BASE")
+        aug = attach(base, "reviewer", "onetest", str(wb))
+        ok("attach folds reviewer's lessons into the prompt",
+           aug["prompt"].startswith("BASE") and "null-check test" in aug["prompt"])
+        ok("attach does not mutate the original", base["prompt"] == "BASE")
 
     # knowledge summary for the dashboard
     rows = [

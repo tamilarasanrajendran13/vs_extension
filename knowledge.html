@@ -1,0 +1,75 @@
+<!doctype html><meta charset='utf-8'><title>Agent Knowledge - Docket</title>
+<style>
+:root{
+  --ink:#1b1a17; --rule:#d9d4c6; --panel-2:#f7f4ec; --paper:#fdfcf7;
+  --muted:#6f6a5c; --carmine:#8c2f28; --ultra:#1f5c5a;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --serif:"Iowan Old Style",Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box}
+#page-knowledge{color:var(--ink);background:var(--paper);font-family:var(--serif);
+  line-height:1.5;padding:32px;max-width:1000px;margin:0 auto}
+#page-knowledge h1{font-size:26px;margin:0 0 2px;letter-spacing:-.01em}
+#page-knowledge .sub{color:var(--muted);margin:0 0 20px;font-size:14px}
+#page-knowledge .totals{display:flex;gap:28px;border-top:1px solid var(--ink);
+  border-bottom:1px solid var(--rule);padding:12px 0;margin-bottom:26px}
+#page-knowledge .totals b{font-family:var(--mono);font-size:22px;display:block;line-height:1}
+#page-knowledge .totals span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+#page-knowledge .agent{border-top:1px solid var(--rule);padding:16px 0}
+#page-knowledge .agent h2{font-family:var(--mono);font-size:15px;margin:0 0 8px;
+  text-transform:uppercase;letter-spacing:.06em}
+#page-knowledge .agent .cnt{color:var(--muted);font-size:12px;font-family:var(--mono)}
+#page-knowledge ul{list-style:none;padding:0;margin:8px 0 0}
+#page-knowledge li{padding:5px 0 5px 14px;border-left:2px solid var(--rule);
+  margin-bottom:4px;font-size:14px}
+#page-knowledge li.approved{border-left-color:var(--ultra)}
+#page-knowledge li.proposed{border-left-color:var(--carmine)}
+#page-knowledge .badge{font-family:var(--mono);font-size:10px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--muted);margin-left:8px}
+#page-knowledge .proj{color:var(--muted);font-family:var(--mono);font-size:11px}
+#page-knowledge h3{font-family:var(--mono);font-size:13px;text-transform:uppercase;
+  letter-spacing:.08em;margin:30px 0 6px;border-top:1px solid var(--ink);padding-top:12px}
+#page-knowledge table{width:100%;border-collapse:collapse;font-size:13px}
+#page-knowledge td{padding:6px 10px 6px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+#page-knowledge td.when{font-family:var(--mono);color:var(--muted);white-space:nowrap;font-size:12px}
+#page-knowledge td.who{font-family:var(--mono);font-size:12px;white-space:nowrap}
+#page-knowledge .empty{color:var(--muted);font-style:italic;padding:24px 0}
+</style>
+<section class='page' id='page-knowledge'>
+<h1>Agent Knowledge</h1>
+<p class='sub'>What each agent has learned, ratified by a human. Proposed lessons await review: <code>python loop.py --learnings</code></p>
+<div class='totals'><div><b>4</b><span>agents learning</span></div><div><b>5</b><span>lessons ratified</span></div><div><b>2</b><span>proposed, pending</span></div></div>
+<div class='agent'>
+<h2>developer <span class='cnt'>2 ratified &middot; 0 proposed</span></h2>
+<ul>
+<li class='approved'>new sources inherit BaseSource and register in registry.py <span class='proj'>onetest</span></li>
+<li class='approved'>copybook parsing lives in src/mainframe/copybook.py <span class='proj'>onetest</span></li>
+</ul></div>
+<div class='agent'>
+<h2>planner <span class='cnt'>1 ratified &middot; 0 proposed</span></h2>
+<ul>
+<li class='approved'>copybook tickets typically touch source, registry, and a config <span class='proj'>onetest</span></li>
+</ul></div>
+<div class='agent'>
+<h2>qa <span class='cnt'>0 ratified &middot; 1 proposed</span></h2>
+<ul>
+<li class='proposed'>volume tests need a deliberate 0.5% mismatch to prove diffs are caught <span class='proj'>onetest</span><span class='badge'>proposed</span></li>
+</ul></div>
+<div class='agent'>
+<h2>reviewer <span class='cnt'>2 ratified &middot; 1 proposed</span></h2>
+<ul>
+<li class='approved'>YAML validators always need a null-check test <span class='proj'>onetest</span></li>
+<li class='approved'>flag any source that bypasses BaseSource.validate() <span class='proj'>onetest</span></li>
+<li class='proposed'>watch for schema drift between source and target configs <span class='proj'>onetest</span><span class='badge'>proposed</span></li>
+</ul></div>
+<h3>Learning timeline</h3>
+<table>
+<tr><td class='when'>2026-07-17</td><td class='who'>qa / onetest</td><td>volume tests need a deliberate 0.5% mismatch to prove diffs are caught</td><td class='who'>proposed</td></tr>
+<tr><td class='when'>2026-07-17</td><td class='who'>reviewer / onetest</td><td>watch for schema drift between source and target configs</td><td class='who'>proposed</td></tr>
+<tr><td class='when'>2026-07-16</td><td class='who'>developer / onetest</td><td>copybook parsing lives in src/mainframe/copybook.py</td><td class='who'>approved</td></tr>
+<tr><td class='when'>2026-07-14</td><td class='who'>reviewer / onetest</td><td>flag any source that bypasses BaseSource.validate()</td><td class='who'>approved</td></tr>
+<tr><td class='when'>2026-07-13</td><td class='who'>planner / onetest</td><td>copybook tickets typically touch source, registry, and a config</td><td class='who'>approved</td></tr>
+<tr><td class='when'>2026-07-11</td><td class='who'>developer / onetest</td><td>new sources inherit BaseSource and register in registry.py</td><td class='who'>approved</td></tr>
+<tr><td class='when'>2026-07-10</td><td class='who'>reviewer / onetest</td><td>YAML validators always need a null-check test</td><td class='who'>approved</td></tr>
+</table>
+</section>
