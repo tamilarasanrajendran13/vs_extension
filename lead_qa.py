@@ -47,6 +47,7 @@ except Exception:
     qa_stage = None
 
 import agent_memory
+import governor
 
 AGENT_NAME = "lead-qa"
 
@@ -174,8 +175,8 @@ def run_lead_qa(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns, radius,
         return {"outcome": "single_shard", "shards": 1}
 
     say("  {} shard(s) across {} frozen test(s)".format(len(shards), len(frozen)))
-    cap = ((cfg.get("governor") or {}).get("max_workers", 1))
-    max_rounds = ((cfg.get("governor") or {}).get("max_coaching_rounds", 2))
+    cap = governor.max_workers(cfg)
+    max_rounds = governor.max_coaching_rounds(cfg)
 
     results = _drive_all(tx, A, cfg, shards, cap, max_rounds, run_shard, say)
 

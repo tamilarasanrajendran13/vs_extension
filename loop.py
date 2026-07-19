@@ -42,6 +42,7 @@ import transport as transport_mod
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 
 import agent_memory  # folds each agent's ratified memory into its prompt
+import governor      # sequencing state machine + the pipeline's knobs
 
 # The spec agent lives in agents/spec.md, not here. Every real ticket has taught
 # it something - that "testable" does not mean numeric, that precedent beats
@@ -949,7 +950,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
             # slice (coaching failures itself). Off by default; a single-slice
             # plan falls straight back to the plain developer, so small tickets
             # never pay the lead's overhead.
-            if (cfg.get("governor") or {}).get("parallel_dev"):
+            if governor.parallel_dev(cfg):
                 import lead_developer
                 led_res = lead_developer.run_lead_developer(
                     tx, cfg, run_id, ticket_id, ticket_text, spec, patterns, radius,
@@ -990,7 +991,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
             # tests into independent groups and runs a worker per shard (coaching
             # inadequate mock data, reporting real code gaps). Off by default; a
             # single shard falls back to the plain QA run.
-            if (cfg.get("governor") or {}).get("parallel_qa"):
+            if governor.parallel_qa(cfg):
                 import lead_qa
                 lq = lead_qa.run_lead_qa(tx, cfg, run_id, ticket_id, ticket_text,
                                          spec, patterns, radius, project, pp, wb,
