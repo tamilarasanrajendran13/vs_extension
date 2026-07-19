@@ -976,12 +976,25 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
             qa = qa_stage.run_qa(tx, cfg, run_id, ticket_id, ticket_text, spec,
                                  patterns, radius, project, pp, wb, release, db, say)
 
-        # Mutation, retro land here.
+        # mutation: break the code on purpose and confirm the tests notice. A
+        # deterministic engine makes mutants and counts survivors; a thin agent
+        # only triages them. Runs once QA is green - measuring whether passing
+        # tests catch bugs is meaningless until they pass.
+        mut = None
+        if qa and qa.get("outcome") == "pass":
+            import mutation
+            mut = mutation.run_mutation_stage(tx, cfg, run_id, ticket_id, ticket_text,
+                                              spec, patterns, radius, project, pp, wb,
+                                              release, db, say)
+
+        # Retro lands here.
         ledger.end_run(run_id, "running", db=db)
         if plan:
             say("")
-            if qa and qa.get("outcome") == "pass":
-                say("  QA passed - the frozen acceptance tests are green.")
+            if mut and mut.get("outcome") == "pass":
+                say("  mutation passed - the tests catch deliberate breaks.")
+            elif qa and qa.get("outcome") == "pass":
+                say("  QA passed - mutation found survivors (tests miss bugs).")
             elif sec and sec.get("outcome") == "pass":
                 say("  security clean - QA raised issues.")
             elif review and review.get("outcome") == "pass":
@@ -996,7 +1009,7 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
                 "verdict": verdict, "questions": [],
                 "prerequisites": prerequisites, "context_gaps": context_gaps,
                 "radius": radius, "plan": plan, "tests": tests, "impl": impl,
-                "review": review, "security": sec, "qa": qa}
+                "review": review, "security": sec, "qa": qa, "mutation": mut}
 
     except Exception as e:
         try:
