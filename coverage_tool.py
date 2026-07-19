@@ -274,6 +274,13 @@ def scan(source, cfg=None, clone_to=None, run=None):
                 {"untested": [], "partial": [], "covered": []}, {})}
     units = enumerate_units(repo)
     cov = measure_coverage(repo, cfg, run=None)
+    # No test files at all is not an error - it is the from-scratch case. Coverage
+    # is 0 by definition and every function is pending; say so plainly.
+    if not det["has_python_tests"]:
+        cov["overall_percent"] = 0.0
+        cov["note"] = ("no test files in this repo yet - coverage is 0 by definition. "
+                       "every function below is pending (the from-scratch case). "
+                       "this is the list the unit-tester agent will write tests for.")
     gaps = find_gaps(units, cov["covered"])
     impl = sorted({u["file"] for u in units})
     mut = mutation_scan(repo, impl, cfg) if gaps["covered"] else {
@@ -393,9 +400,13 @@ def main(argv=None):
     print("  mutation kill :", rep["mutation_kill_rate"],
           "(survivors: {})".format(rep["mutation_survivors"]))
     if rep["pending"]:
-        print("\n  pending (write tests for these):")
-        for p in rep["pending"][:25]:
+        shown = rep["pending"][:25]
+        print("\n  pending - {} function(s) need tests{}:".format(
+            rep["functions_untested"],
+            " (showing first 25)" if rep["functions_untested"] > 25 else ""))
+        for p in shown:
             print("    {}:{}  {}()".format(p["file"], p["lineno"], p["name"]))
+        print("\n  (--json prints the full worklist)")
 
 
 if __name__ == "__main__":
