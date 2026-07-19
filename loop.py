@@ -2166,6 +2166,18 @@ def main() -> int:
         result = run_ticket(tx, cfg, a.ticket, text, db,
                             project=a.project, release=release,
                             workspace_path=a.workspace_path, ticket=ticket)
+
+        # retro runs on EVERY finished run, pass or fail - the runs that escalated
+        # often have the most to teach. It reads the run back from the ledger and
+        # proposes learnings into the --learnings queue; it never edits a context
+        # file and never blocks, so a failure here must not sink the run's result.
+        try:
+            import retro
+            retro.run_retro(tx, cfg, result.get("run_id"), a.ticket, a.project,
+                            wb, release, db, tx.progress)
+        except Exception as e:
+            tx.progress(f"retro skipped: {e}")
+
         # stdout is the WIRE. The final result is a protocol message, not a print.
         tx._send({"method": "done", "params": result}) if hasattr(tx, "_send") else None
         return 0
