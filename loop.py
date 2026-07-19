@@ -2178,6 +2178,16 @@ def main() -> int:
         except Exception as e:
             tx.progress(f"retro skipped: {e}")
 
+        # unit-test results back to Jira - the developer BUILT the comment during
+        # the run; this only SENDS it, and only if configured (cfg.jira.post_results,
+        # off by default) and the implementation completed. Never fatal.
+        try:
+            import jira_results
+            jira_results.post_results(cfg, ticket, result.get("run_id"), a.ticket,
+                                      result, wb, release, tx.progress)
+        except Exception as e:
+            tx.progress(f"result post-back skipped: {e}")
+
         # stdout is the WIRE. The final result is a protocol message, not a print.
         tx._send({"method": "done", "params": result}) if hasattr(tx, "_send") else None
         return 0
