@@ -986,9 +986,20 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
         # real as the authoritative gate. Runs once security is clean.
         qa = None
         if sec and sec.get("outcome") == "pass":
-            import qa as qa_stage
-            qa = qa_stage.run_qa(tx, cfg, run_id, ticket_id, ticket_text, spec,
-                                 patterns, radius, project, pp, wb, release, db, say)
+            # A big regression suite can go to the lead QA, which shards the frozen
+            # tests into independent groups and runs a worker per shard (coaching
+            # inadequate mock data, reporting real code gaps). Off by default; a
+            # single shard falls back to the plain QA run.
+            if (cfg.get("governor") or {}).get("parallel_qa"):
+                import lead_qa
+                lq = lead_qa.run_lead_qa(tx, cfg, run_id, ticket_id, ticket_text,
+                                         spec, patterns, radius, project, pp, wb,
+                                         release, db, say)
+                qa = None if lq.get("outcome") == "single_shard" else lq
+            if qa is None:
+                import qa as qa_stage
+                qa = qa_stage.run_qa(tx, cfg, run_id, ticket_id, ticket_text, spec,
+                                     patterns, radius, project, pp, wb, release, db, say)
 
         # mutation: break the code on purpose and confirm the tests notice. A
         # deterministic engine makes mutants and counts survivors; a thin agent
