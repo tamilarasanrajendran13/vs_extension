@@ -1241,7 +1241,7 @@ main.wrap { padding-top: 4px; }
 
 /* gate description sits on its own full-width row (was overflowing the column) */
 tr.gate-tr td { border-bottom: 0; }
-tr.gate-desc-tr td.gate-desc { padding-top: 0; padding-bottom: 12px; }
+tr.gate-desc-tr td.gate-desc { padding-top: 0; padding-bottom: 12px; white-space: normal; word-break: break-word; }
 
 /* ---- Ledger tab: plain-English table descriptions ------------------------ */
 .inv-lede { font-size: 12.5px; color: var(--ink-mute); line-height: 1.5; margin: 4px 0 16px; max-width: 720px; }
