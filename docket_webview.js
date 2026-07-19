@@ -16,16 +16,17 @@
 //     posted to the webview on every ledger change. app.js already listens for
 //     { type: "payload", payload } and re-renders.
 //
-// INTEGRATION (two small steps, no changes to your existing extension logic):
-//   1. In your extension's activate(context):
-//          require("./docket_webview").register(context);
-//   2. In package.json, contribute the command:
-//          "contributes": {
-//            "commands": [
-//              { "command": "docket.dashboard", "title": "Docket: Open Dashboard" }
-//            ]
-//          }
-//   Then run it from the Command Palette: "Docket: Open Dashboard".
+// INTEGRATION (matches this extension's convention - module in src/, command
+// registered in extension.js):
+//   1. Save this file as  src/docket_webview.js.
+//   2. In extension.js, near the other requires:
+//          const dashboard = require('./src/docket_webview');
+//      and add, alongside the other registerCommand calls:
+//          vscode.commands.registerCommand('docket.dashboard', () => dashboard.open())
+//   3. In package.json contribute the command:
+//          { "command": "docket.dashboard", "title": "Open Dashboard", "category": "Docket" }
+//   Then reload the window (Developer: Reload Window) and run
+//   "Docket: Open Dashboard" from the palette.
 //
 // Settings (all optional; sensible defaults):
 //   docket.pythonPath   the python to run (default: "python")
@@ -133,35 +134,45 @@ function ledgerSignature(dbFile) {
   return sig(dbFile) + "|" + sig(dbFile + "-wal");
 }
 
-function register(context) {
-  const cmd = vscode.commands.registerCommand("docket.dashboard", async function () {
-    const cfg = config();
-    const panel = vscode.window.createWebviewPanel(
-      "docketDashboard", "Docket", vscode.ViewColumn.Active,
-      { enableScripts: true, retainContextWhenHidden: true });
+let currentPanel = null;
+let pollTimer = null;
 
-    try {
-      panel.webview.html = await buildInitialHtml(cfg, panel.webview);
-    } catch (e) {
-      panel.webview.html = errorHtml(e.message || e);
-      return;
-    }
+// Open (or reveal) the dashboard panel. Matches the extension's convention:
+// extension.js registers the command, the work lives here.
+function open() {
+  if (currentPanel) { currentPanel.reveal(vscode.ViewColumn.Active); return; }
 
-    // Live updates: poll the ledger and re-post only when it actually changed.
-    // Polling (not fs.watch) because SQLite in WAL mode does not reliably fire
-    // watch events on the main db file. Same reasoning as serve.py's mtime gate.
-    const file = dbPath(cfg);
-    let last = ledgerSignature(file);
-    const interval = setInterval(async function () {
-      const now = ledgerSignature(file);
-      if (now === last) return;
-      last = now;
-      try { await postPayload(cfg, panel); } catch (e) { /* transient */ }
-    }, 1500);
+  const cfg = config();
+  const panel = vscode.window.createWebviewPanel(
+    "docketDashboard", "Docket", vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true });
+  currentPanel = panel;
 
-    panel.onDidDispose(function () { clearInterval(interval); });
+  buildInitialHtml(cfg, panel.webview).then(function (html) {
+    panel.webview.html = html;
+    startPolling(cfg, panel);
+  }).catch(function (e) {
+    panel.webview.html = errorHtml(e && e.message ? e.message : e);
   });
-  context.subscriptions.push(cmd);
+
+  panel.onDidDispose(function () {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    currentPanel = null;
+  });
 }
 
-module.exports = { register };
+// Live updates: poll the ledger and re-post only when it actually changed.
+// Polling (not fs.watch) because SQLite in WAL mode does not reliably fire
+// watch events on the main db file. Same reasoning as serve.py's mtime gate.
+function startPolling(cfg, panel) {
+  const file = dbPath(cfg);
+  let last = ledgerSignature(file);
+  pollTimer = setInterval(function () {
+    const now = ledgerSignature(file);
+    if (now === last) return;
+    last = now;
+    postPayload(cfg, panel).catch(function () { /* transient mid-write */ });
+  }, 1500);
+}
+
+module.exports = { open };
