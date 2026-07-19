@@ -23,7 +23,9 @@ function activate(context) {
     vscode.commands.registerCommand('docket.draftContext', () => gateway.draftContext()),
     vscode.commands.registerCommand('docket.clone', () => clone.run()),
     vscode.commands.registerCommand('docket.selectProject', () => clone.select()),
-    vscode.commands.registerCommand('docket.dashboard', () => dashboard.open())
+    vscode.commands.registerCommand('docket.dashboard', () => dashboard.open()),
+    vscode.commands.registerCommand('docket.serve', () => dashboard.serve()),
+    vscode.commands.registerCommand('docket.serveStop', () => dashboard.stopServer())
   );
 
   // The gateway is the ONLY thing tying Docket to VS Code. All pipeline logic
@@ -42,6 +44,9 @@ function activate(context) {
   //   @docket        -> src/participant.js  chat participant
 }
 
-function deactivate() {}
+function deactivate() {
+  // don't leave the live server running after the extension unloads
+  try { dashboard.stopServer(); } catch (e) { /* nothing to stop */ }
+}
 
 module.exports = { activate, deactivate };

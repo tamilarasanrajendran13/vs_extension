@@ -175,4 +175,74 @@ function startPolling(cfg, panel) {
   }, 1500);
 }
 
-module.exports = { open };
+// ---------------------------------------------------------------------------
+// The live server host: run serve.py from inside VS Code.
+//
+// serve.py is a long-running localhost server (the browser host). Here we spawn
+// it, surface its URL, and give a way to stop it. It is still read-only and
+// still never calls a model - the extension only launches it.
+// ---------------------------------------------------------------------------
+
+let serverProc = null;
+let serverChannel = null;
+let serverUrl = null;
+
+function openUrl(url) {
+  vscode.env.openExternal(vscode.Uri.parse(url));
+}
+
+function serve() {
+  if (serverProc) {                       // already running - just open it
+    if (serverUrl) openUrl(serverUrl);
+    else vscode.window.showInformationMessage("Docket server is starting...");
+    return;
+  }
+  const cfg = config();
+  if (!serverChannel) serverChannel = vscode.window.createOutputChannel("Docket Server");
+  serverChannel.clear();
+  serverChannel.show(true);
+  serverChannel.appendLine("$ " + cfg.python + " serve.py --db " + cfg.db + "   (cwd: " + cfg.cwd + ")\n");
+
+  serverProc = cp.spawn(cfg.python, ["serve.py", "--db", cfg.db], { cwd: cfg.cwd });
+  serverUrl = null;
+
+  function scan(buf) {
+    const text = buf.toString();
+    serverChannel.append(text);
+    if (!serverUrl) {
+      const m = text.match(/https?:\/\/[0-9.]+:\d+\/?/);
+      if (m) {
+        serverUrl = m[0];
+        vscode.window.showInformationMessage(
+          "Docket server running at " + serverUrl, "Open in Browser"
+        ).then(function (pick) { if (pick === "Open in Browser") openUrl(serverUrl); });
+      }
+    }
+  }
+  serverProc.stdout.on("data", scan);
+  serverProc.stderr.on("data", scan);     // serve.py prints its URL to stderr
+
+  serverProc.on("error", function (e) {
+    const msg = e && e.message ? e.message : String(e);
+    serverChannel.appendLine("\n[failed to start] " + msg);
+    vscode.window.showErrorMessage("Docket server failed to start: " + msg);
+    serverProc = null;
+  });
+  serverProc.on("exit", function (code) {
+    serverChannel.appendLine("\n[server stopped" + (code != null ? " (exit " + code + ")" : "") + "]");
+    serverProc = null;
+    serverUrl = null;
+  });
+}
+
+function stopServer() {
+  if (!serverProc) {
+    vscode.window.showInformationMessage("Docket server is not running.");
+    return;
+  }
+  try { serverProc.kill(); } catch (e) { /* already gone */ }
+  serverProc = null;
+  serverUrl = null;
+}
+
+module.exports = { open, serve, stopServer };
