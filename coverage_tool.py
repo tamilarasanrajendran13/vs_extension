@@ -275,6 +275,8 @@ def report(det, cov, gaps, mut):
         "function_coverage_percent": round(100.0 * tested / total_units, 1) if total_units else None,
         "mutation_kill_rate": mut.get("kill_rate"),
         "mutation_survivors": len(mut.get("survivors") or []),
+        "mutation_total": mut.get("total"),
+        "mutation_note": mut.get("skipped"),
         # the exact worklist the unit-tester agent will be handed
         "pending": [{"file": u["file"], "name": u["name"], "lineno": u["lineno"]}
                     for u in gaps["untested"]][:200],
@@ -426,7 +428,9 @@ def main(argv=None):
         rep["functions_partial"], rep["functions_covered"]))
     print("  function cover:", rep["function_coverage_percent"], "%")
     print("  mutation kill :", rep["mutation_kill_rate"],
-          "(survivors: {})".format(rep["mutation_survivors"]))
+          "(survivors: {}, mutants: {})".format(rep["mutation_survivors"], rep.get("mutation_total")))
+    if rep.get("mutation_note"):
+        print("  >> mutation: " + str(rep["mutation_note"]))
     if rep["pending"]:
         shown = rep["pending"][:25]
         print("\n  pending - {} function(s) need tests{}:".format(
