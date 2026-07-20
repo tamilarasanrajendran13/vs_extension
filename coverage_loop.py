@@ -166,10 +166,45 @@ def _retry_prompt(func, src, det, missed, repo):
             "them - add cases whose inputs reach each line:\n" + "\n".join(lines))
 
 
+def _run_mutation(repo, files, cfg, mutate_fn=None):
+    """Run the real mutation engine on the given files. Injectable for tests."""
+    if mutate_fn is not None:
+        return mutate_fn(repo, files, cfg)
+    if not files:
+        return {"kill_rate": None, "survived": 0, "survivors": [], "skipped": "no tested code"}
+    try:
+        import mutation
+        mcfg = dict(cfg)
+        mcfg["developer"] = dict(mcfg.get("developer") or {})
+        mcfg["developer"]["unit_command"] = ((cfg.get("coverage") or {}).get(
+            "test_command")) or [sys.executable, "-m", "pytest", "-q"]
+        r = mutation.run_mutation(str(repo), files, mcfg)
+        r["skipped"] = None
+        return r
+    except Exception as e:
+        return {"kill_rate": None, "survived": 0, "survivors": [],
+                "skipped": "mutation error: %s" % e}
+
+
+def _mutation_prompt(repo, srcfile, changes):
+    try:
+        src = (Path(repo) / srcfile).read_text(encoding="utf-8")
+    except Exception:
+        src = ""
+    diffs = "\n\n".join(str(c) for c in changes[:15])
+    return ("FILE: %s\n\nThe current tests PASS even when the code is changed in "
+            "the ways below - each is a bug the tests fail to catch. Write a pytest "
+            "test file whose assertions FAIL when each change is applied (they pass "
+            "on the real code, and would catch the mutation). Import from the file "
+            "path as usual; run from the repo root.\n\nSOURCE:\n%s\n\nUNDETECTED "
+            "CHANGES (mutants that survived):\n%s" % (srcfile, src[:4000], diffs))
+
+
 # ------------------------------------------------------------------ the loop
 
 def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
-        max_functions=None, say=None, run_cmd=None, scan_fn=None, measure=None):
+        max_functions=None, say=None, run_cmd=None, scan_fn=None, measure=None,
+        mutate_fn=None):
     say = say or (lambda *_: None)
     run_cmd = run_cmd or _run
     if scan_fn is None:
@@ -261,19 +296,49 @@ def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
     a_cov = after["report"].get("coverage_percent")
     partial = [a for a in added if a.get("status") == "partial"]
     covered_files = sorted({a["file"] for a in added})
-    mut = {"kill_rate": None, "survived": 0, "survivors": [], "skipped": "no covered code"}
-    if covered_files:
-        try:
-            import mutation
-            mcfg = dict(cfg)
-            mcfg["developer"] = dict(mcfg.get("developer") or {})
-            mcfg["developer"]["unit_command"] = ((cfg.get("coverage") or {}).get(
-                "test_command")) or [sys.executable, "-m", "pytest", "-q"]
-            mut = mutation.run_mutation(str(repo), covered_files, mcfg)
-            mut["skipped"] = None
-        except Exception as e:
-            mut = {"kill_rate": None, "survived": 0, "survivors": [],
-                   "skipped": "mutation error: %s" % e}
+    mut = _run_mutation(repo, covered_files, cfg, mutate_fn)
+
+    # Mutation feedback: if survivors slip past the tests, feed them back to the
+    # agent to add catching assertions, then re-measure. This is what turns
+    # "tests that run the code" into "tests that check the code".
+    mut_target = float((cfg.get("coverage") or {}).get("mutation_target", 0.8))
+    strengthened = 0
+    if (mut.get("kill_rate") is not None and mut["kill_rate"] < mut_target
+            and mut.get("survivors")):
+        say("mutation left %d survivor(s) at %.0f%% - asking the agent to "
+            "strengthen assertions..." % (mut.get("survived", 0), 100 * mut["kill_rate"]))
+        by_file = {}
+        for s in mut["survivors"]:
+            by_file.setdefault(s.get("file", "?"), []).append(s.get("change", ""))
+        for srcfile, changes in by_file.items():
+            try:
+                reply = tx.chat(A["model"], A["prompt"], _mutation_prompt(repo, srcfile, changes))
+                spec = parse_json(reply.get("text", "") if isinstance(reply, dict) else "")
+            except Exception:
+                continue
+            code = spec.get("test_code") or ""
+            if not code.strip():
+                continue
+            rel = "test/unit/test_%s_mut.py" % Path(srcfile).stem
+            dest = Path(repo) / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(code, encoding="utf-8")
+            proc = (run_cmd or _run)([sys.executable, "-m", "pytest", rel, "-q"], repo)
+            if getattr(proc, "returncode", 1) != 0:      # must be green to keep
+                try:
+                    dest.unlink()
+                except Exception:
+                    pass
+                continue
+            added.append({"func": "mutation-catcher", "file": srcfile, "test": rel,
+                          "coverage": None, "status": "mutation"})
+            strengthened += 1
+        if strengthened:
+            mut2 = _run_mutation(repo, covered_files, cfg, mutate_fn)
+            if mut2.get("kill_rate") is not None:
+                say("mutation kill rate: %.0f%% -> %.0f%% after strengthening (%d survivor(s))"
+                    % (100 * mut["kill_rate"], 100 * mut2["kill_rate"], mut2.get("survived", 0)))
+                mut = mut2
 
     say("")
     say("coverage %s%% -> %s%%   tests added: %d   skipped: %d"
@@ -358,6 +423,15 @@ def _self_test():
                 return seq[min(i, len(seq) - 1)]
             return measure
 
+        def make_mutate(seq):
+            st = {"i": 0}
+
+            def mutate(repo_, files, cfg):
+                r = seq[min(st["i"], len(seq) - 1)]
+                st["i"] += 1
+                return r
+            return mutate
+
         # keep -> covered; drop -> red, discarded; grow -> partial then full on retry
         m = make_measure({
             "keep": [(True, 1.0, [])],
@@ -375,6 +449,19 @@ def _self_test():
            not (repo / "test" / "unit" / "test_m_drop.py").exists())
         ok("retry raised partial -> covered",
            "grow" in by and by["grow"]["status"] == "covered" and by["grow"]["coverage"] == 1.0)
+
+        # mutation feedback: survivors -> agent strengthens -> kill rate rises
+        all_green = lambda cmd, cwd: type("P", (), {"stdout": "1 passed", "returncode": 0})()
+        rm = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
+                 say=lambda *_: None, measure=make_measure({"keep": [(True, 1.0, [])]}),
+                 run_cmd=all_green, scan_fn=scan(),
+                 mutate_fn=make_mutate([
+                     {"kill_rate": 0.5, "survived": 2, "skipped": None,
+                      "survivors": [{"file": "src/m.py", "change": "a == b -> a != b"}]},
+                     {"kill_rate": 1.0, "survived": 0, "survivors": [], "skipped": None}]))
+        ok("mutation feedback raised kill rate",
+           rm["mutation_kill_rate"] == 1.0
+           and any(a.get("status") == "mutation" for a in rm["tests_added"]))
 
         # green but 0 coverage -> hollow -> discarded
         r2 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
