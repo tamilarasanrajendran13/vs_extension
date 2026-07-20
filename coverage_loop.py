@@ -107,53 +107,69 @@ _FALLBACK = ("You write one focused, passing unit test for the given function. "
 
 # ------------------------------------------------------------------ enforce
 
-def _apply_and_verify(repo, func, spec, cfg, run_cmd, say):
-    """Write the proposed test, run it, and KEEP it only if it passes. A test
-    that errors or fails is removed - the agent does not get to leave red tests
-    behind. Returns (kept: bool, reason: str, test_rel: str|None)."""
-    rel = spec.get("test_file") or ("test/unit/test_%s.py" % func["name"])
-    rel = str(rel).replace("\\", "/")
-    dest = Path(repo) / rel
-    code = spec.get("test_code") or ""
-    if not code.strip():
-        return False, "no test_code", None
-
-    pre_existing = dest.exists()
-    backup = None
+def _func_coverage(repo, test_rel, func, run_cmd):
+    """Run one test file under coverage; return (passed, fraction, missed_lines)
+    for the target function - the real 'did this raise coverage' check."""
+    repo = Path(repo)
+    covjson = ".docket_fcov.json"
+    proc = run_cmd([sys.executable, "-m", "coverage", "run", "-m", "pytest",
+                    test_rel, "-q"], repo)
+    passed = getattr(proc, "returncode", 1) == 0
+    run_cmd([sys.executable, "-m", "coverage", "json", "-o", covjson], repo)
+    executed = set()
     try:
-        if pre_existing:
-            backup = dest.read_text(encoding="utf-8")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(code, encoding="utf-8")
-    except Exception as e:
-        return False, "could not write test: %s" % e, None
-
-    cmd = ((cfg or {}).get("coverage") or {}).get("test_command_single") or [
-        sys.executable, "-m", "pytest", rel, "-q"]
-    proc = run_cmd(cmd, repo)
-    ok = getattr(proc, "returncode", 1) == 0
-
-    if ok:
-        say("  + %s -> %s (green, kept)" % (func["name"], rel))
-        return True, "passed", rel
-
-    # revert: restore a pre-existing file, or remove the one we added
-    try:
-        if pre_existing and backup is not None:
-            dest.write_text(backup, encoding="utf-8")
-        elif dest.exists():
-            dest.unlink()
+        data = json.loads((repo / covjson).read_text(encoding="utf-8"))
+        want = func["file"].replace("\\", "/")
+        for k, info in (data.get("files") or {}).items():
+            kk = str(k).replace("\\", "/")
+            if kk == want or kk.endswith("/" + want) or kk.endswith(want):
+                executed = set(info.get("executed_lines") or [])
+                break
     except Exception:
         pass
-    tail = "\n".join((getattr(proc, "stdout", "") or "").splitlines()[-4:])
-    say("  - %s discarded (test not green)" % func["name"])
-    return False, "test did not pass: %s" % tail[:200], None
+    try:
+        (repo / covjson).unlink()
+    except Exception:
+        pass
+    body = set(func.get("body_lines") or [])
+    if not body:
+        return passed, (1.0 if passed else 0.0), []
+    frac = len(body & executed) / len(body)
+    return passed, frac, sorted(body - executed)
+
+
+def _write_measure(repo, rel, code, func, run_cmd, measure=None):
+    """Write the candidate test and measure the function's coverage from it."""
+    if measure is not None:
+        return measure(rel, code, func)
+    dest = Path(repo) / rel
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(code, encoding="utf-8")
+    except Exception:
+        return False, 0.0, []
+    return _func_coverage(repo, rel, func, run_cmd)
+
+
+def _retry_prompt(func, src, det, missed, repo):
+    lines = []
+    try:
+        alllines = (Path(repo) / func["file"]).read_text(encoding="utf-8").splitlines()
+        for ln in missed[:25]:
+            if 1 <= ln <= len(alllines):
+                lines.append("%d: %s" % (ln, alllines[ln - 1]))
+    except Exception:
+        lines = ["(lines %s)" % ", ".join(map(str, missed[:25]))]
+    return (_user_prompt(func, src, det) +
+            "\n\nYour previous test PASSED but did NOT run these lines of the "
+            "function. Return a COMPLETE, EXPANDED test file that also drives "
+            "them - add cases whose inputs reach each line:\n" + "\n".join(lines))
 
 
 # ------------------------------------------------------------------ the loop
 
 def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
-        max_functions=None, say=None, run_cmd=None, scan_fn=None):
+        max_functions=None, say=None, run_cmd=None, scan_fn=None, measure=None):
     say = say or (lambda *_: None)
     run_cmd = run_cmd or _run
     if scan_fn is None:
@@ -185,63 +201,66 @@ def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
         % (b_cov, len(pending)))
 
     A = _load_agent(workbench, cfg)
+    target = float((cfg.get("coverage") or {}).get("target", 0.9))
+    max_retries = int((cfg.get("coverage") or {}).get("max_retries", 2))
     added, skipped = [], []
     for func in pending:
         src = read_source(repo, func)
         if not src:
             skipped.append({"func": func["name"], "why": "could not read source"})
             continue
-        try:
-            reply = tx.chat(A["model"], A["prompt"], _user_prompt(func, src, det))
-            spec = parse_json(reply.get("text", "") if isinstance(reply, dict) else "")
-        except Exception as e:
-            skipped.append({"func": func["name"], "why": "agent/parse error: %s" % e})
-            continue
-        kept, why, rel = _apply_and_verify(repo, func, spec, cfg, run_cmd, say)
-        if kept:
-            added.append({"func": func["name"], "file": func["file"], "test": rel})
-        else:
-            skipped.append({"func": func["name"], "why": why})
-
-    after = scan_fn(repo, cfg)
-
-    # Enforce "green AND raised coverage". A test can pass while exercising none
-    # of the function it targets - it mocked the logic out. Those are worthless,
-    # so discard any test whose function is STILL fully untested afterwards.
-    ag = after.get("gaps") or {}
-
-    def _status(file, name):
-        for bucket in ("covered", "partial"):
-            for u in ag.get(bucket, []):
-                if u["file"] == file and u["name"] == name:
-                    return bucket
-        return "untested"
-
-    kept = []
-    for a in added:
-        st = _status(a["file"], a["func"])
-        a["coverage"] = st
-        if st == "untested":
+        # One test file PER FUNCTION, so functions in the same module do not
+        # overwrite each other's tests (the bug behind "2 written, 1 shows").
+        stem = Path(func["file"]).stem
+        rel = "test/unit/test_%s_%s.py" % (stem, func["name"])
+        best = None
+        for attempt in range(1 + max_retries):
+            user = (_user_prompt(func, src, det) if attempt == 0 or best is None
+                    else _retry_prompt(func, src, det, best["missed"], repo))
             try:
-                (Path(repo) / a["test"]).unlink()
+                reply = tx.chat(A["model"], A["prompt"], user)
+                spec = parse_json(reply.get("text", "") if isinstance(reply, dict) else "")
+            except Exception as e:
+                if best is None:
+                    skipped.append({"func": func["name"], "why": "agent/parse error: %s" % e})
+                break
+            code = spec.get("test_code") or ""
+            if not code.strip():
+                continue
+            passed, frac, missed = _write_measure(repo, rel, code, func, run_cmd, measure)
+            if not passed:
+                continue                      # red - try again, don't keep
+            if best is None or frac > best["frac"]:
+                best = {"frac": frac, "code": code, "missed": missed}
+            if frac >= target or not missed:  # good enough, or nothing left to cover
+                break
+            say("  ~ %s at %.0f%% - retrying to cover %d more line(s)"
+                % (func["name"], 100 * frac, len(missed)))
+
+        if best is None or best["frac"] <= 0.0:
+            try:
+                (Path(repo) / rel).unlink()
             except Exception:
                 pass
-            skipped.append({"func": a["func"],
-                            "why": "green but exercised none of the function "
-                                   "(over-mocked) - discarded"})
-            say("  x %s discarded (green but 0 coverage - over-mocked)" % a["func"])
+            if not any(s["func"] == func["name"] for s in skipped):
+                skipped.append({"func": func["name"],
+                                "why": "no green test that executed the function "
+                                       "(over-mocked, or not unit-testable as written)"})
+            say("  x %s discarded (0 real coverage)" % func["name"])
         else:
-            kept.append(a)
-    if len(kept) != len(added):
-        added = kept
-        after = scan_fn(repo, cfg)          # re-measure without the hollow tests
-        ag = after.get("gaps") or {}
-    else:
-        added = kept
-    a_cov = after["report"].get("coverage_percent")
-    partial = [a for a in added if a.get("coverage") == "partial"]
+            dest = Path(repo) / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(best["code"], encoding="utf-8")
+            status = "covered" if best["frac"] >= target else "partial"
+            added.append({"func": func["name"], "file": func["file"], "test": rel,
+                          "coverage": round(best["frac"], 3), "status": status})
+            say("  + %s -> %s (%.0f%% of the function - %s)"
+                % (func["name"], rel, 100 * best["frac"], status))
 
-    covered_files = sorted({f["file"] for f in (after.get("gaps") or {}).get("covered", [])})
+    after = scan_fn(repo, cfg)
+    a_cov = after["report"].get("coverage_percent")
+    partial = [a for a in added if a.get("status") == "partial"]
+    covered_files = sorted({a["file"] for a in added})
     mut = {"kill_rate": None, "survived": 0, "survivors": [], "skipped": "no covered code"}
     if covered_files:
         try:
@@ -310,81 +329,87 @@ def _self_test():
         repo = Path(td)
         (repo / "src").mkdir()
         (repo / "src" / "m.py").write_text(
-            "def keep(a):\n    return a + 1\n\ndef drop(a):\n    return a - 1\n")
+            "def keep(a):\n    return a + 1\n\ndef drop(a):\n    return a - 1\n"
+            "\ndef grow(a):\n    if a:\n        return 1\n    return 0\n")
 
-        pending = [
-            {"file": "src/m.py", "name": "keep", "lineno": 1, "end_lineno": 2},
-            {"file": "src/m.py", "name": "drop", "lineno": 4, "end_lineno": 5},
-        ]
+        P = {
+            "keep": {"file": "src/m.py", "name": "keep", "lineno": 1, "end_lineno": 2, "body_lines": [2]},
+            "drop": {"file": "src/m.py", "name": "drop", "lineno": 4, "end_lineno": 5, "body_lines": [5]},
+            "grow": {"file": "src/m.py", "name": "grow", "lineno": 7, "end_lineno": 10, "body_lines": [8, 9, 10]},
+        }
+        pending = [P["keep"], P["drop"], P["grow"]]
 
-        def fake_scan(r, cfg):
-            # before: 0%, both pending; after: 50%, 'keep' now covered
-            done = getattr(fake_scan, "called", False)
-            fake_scan.called = True
-            if not done:
+        def scan(cov=0.0, untested=None):
+            def s(r, cfg):
                 return {"detect": {"primary": "python"},
-                        "report": {"supported": True, "coverage_percent": 0.0},
-                        "gaps": {"untested": pending, "partial": [], "covered": []}}
-            return {"detect": {"primary": "python"},
-                    "report": {"supported": True, "coverage_percent": 50.0},
-                    "gaps": {"untested": [pending[1]], "partial": [],
-                             "covered": [pending[0]]}}
+                        "report": {"supported": True, "coverage_percent": cov},
+                        "gaps": {"untested": pending if untested is None else untested,
+                                 "partial": [], "covered": []}}
+            return s
 
-        # test for 'keep' passes; test for 'drop' fails
-        def fake_run(cmd, cwd):
-            rel = cmd[-2] if len(cmd) >= 2 else ""
-            rc = 1 if "drop" in rel else 0
-            out = "1 passed" if rc == 0 else "1 failed"
-            return type("P", (), {"stdout": out, "returncode": rc})()
+        def make_measure(plan):
+            state = {}
 
-        res = run(_FakeTx(), {}, str(repo), workbench=str(repo),
-                  say=lambda *_: None, run_cmd=fake_run, scan_fn=fake_scan)
+            def measure(rel, code, func):
+                n = func["name"]
+                i = state.get(n, 0)
+                state[n] = i + 1
+                seq = plan.get(n, [(True, 1.0, [])])
+                return seq[min(i, len(seq) - 1)]
+            return measure
 
-        ok("before/after coverage reported", res["before_coverage"] == 0.0
-           and res["after_coverage"] == 50.0)
-        ok("green test kept", any(a["func"] == "keep" for a in res["tests_added"]))
+        # keep -> covered; drop -> red, discarded; grow -> partial then full on retry
+        m = make_measure({
+            "keep": [(True, 1.0, [])],
+            "drop": [(False, 0.0, [5])],
+            "grow": [(True, 0.5, [9, 10]), (True, 1.0, [])],
+        })
+        res = run(_FakeTx(), {}, str(repo), workbench=str(repo), say=lambda *_: None,
+                  measure=m, scan_fn=scan(cov=66.0))
+        by = {a["func"]: a for a in res["tests_added"]}
+        ok("green covering test kept as covered",
+           "keep" in by and by["keep"]["status"] == "covered")
         ok("red test discarded", any(s["func"] == "drop" for s in res["skipped"]))
-        ok("kept test file written", (repo / "test" / "unit" / "test_keep.py").exists())
-        ok("discarded test file removed", not (repo / "test" / "unit" / "test_drop.py").exists())
+        ok("per-function filename used", (repo / "test" / "unit" / "test_m_keep.py").exists())
+        ok("same-module functions do not clobber",
+           not (repo / "test" / "unit" / "test_m_drop.py").exists())
+        ok("retry raised partial -> covered",
+           "grow" in by and by["grow"]["status"] == "covered" and by["grow"]["coverage"] == 1.0)
 
-        # unsupported project short-circuits cleanly
-        def unsup_scan(r, cfg):
-            return {"report": {"supported": False, "unsupported_note": "no python"}}
-        r2 = run(_FakeTx(), {}, str(repo), scan_fn=unsup_scan, say=lambda *_: None)
-        ok("unsupported project handled", r2["supported"] is False)
+        # green but 0 coverage -> hollow -> discarded
+        r2 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
+                 say=lambda *_: None, measure=make_measure({"keep": [(True, 0.0, [2])]}),
+                 scan_fn=scan())
+        ok("green-but-hollow discarded",
+           len(r2["tests_added"]) == 0
+           and any("executed" in s["why"] for s in r2["skipped"]))
 
-        # a batch limit is honoured
-        fake_scan.called = False
-        r3 = run(_FakeTx(), {}, str(repo), workbench=str(repo), max_functions=1,
-                 say=lambda *_: None, run_cmd=fake_run, scan_fn=fake_scan)
-        ok("max_functions limits the batch",
-           len(r3["tests_added"]) + len(r3["skipped"]) == 1)
+        # stuck below target across retries -> reported partial, still kept
+        r3 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
+                 say=lambda *_: None,
+                 measure=make_measure({"keep": [(True, 0.6, [2])] * 3}), scan_fn=scan())
+        ok("below-target kept as partial",
+           any(a["func"] == "keep" and a["status"] == "partial" for a in r3["tests_added"]))
 
-        # only= restricts to an exact file::func selection (the picker's output)
-        fake_scan.called = False
-        r4 = run(_FakeTx(), {}, str(repo), workbench=str(repo),
-                 only=["src/m.py::drop"], say=lambda *_: None,
-                 run_cmd=fake_run, scan_fn=fake_scan)
-        picked = [a["func"] for a in r4["tests_added"]] + [s["func"] for s in r4["skipped"]]
+        # unsupported project short-circuits
+        ok("unsupported handled",
+           run(_FakeTx(), {}, str(repo), say=lambda *_: None,
+               scan_fn=lambda r, c: {"report": {"supported": False,
+                                                 "unsupported_note": "no python"}})["supported"] is False)
+
+        # only= and max_functions
+        r5 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::drop"],
+                 say=lambda *_: None, measure=make_measure({"drop": [(True, 1.0, [])]}),
+                 scan_fn=scan())
+        picked = [a["func"] for a in r5["tests_added"]] + [s["func"] for s in r5["skipped"]]
         ok("only= restricts to the chosen function", picked == ["drop"])
 
-        # green-but-hollow: test passes, but after-scan shows the function still
-        # untested -> it must be discarded, not counted as added.
-        def hollow_scan(r, cfg):
-            done = getattr(hollow_scan, "called", False)
-            hollow_scan.called = True
-            gap = {"untested": [pending[0]], "partial": [], "covered": []}
-            return {"detect": {"primary": "python"},
-                    "report": {"supported": True, "coverage_percent": 0.0},
-                    "gaps": gap}
-        all_green = lambda cmd, cwd: type("P", (), {"stdout": "1 passed", "returncode": 0})()
-        r5 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
-                 say=lambda *_: None, run_cmd=all_green, scan_fn=hollow_scan)
-        ok("green but 0-coverage test discarded",
-           len(r5["tests_added"]) == 0
-           and any("over-mocked" in s["why"] for s in r5["skipped"]))
+        r6 = run(_FakeTx(), {}, str(repo), workbench=str(repo), max_functions=1,
+                 say=lambda *_: None,
+                 measure=make_measure({}), scan_fn=scan())
+        ok("max_functions limits the batch",
+           len(r6["tests_added"]) + len(r6["skipped"]) == 1)
 
-        # parse_json tolerates fences
         ok("parse_json reads fenced json",
            parse_json("```json\n{\"a\":1}\n```")["a"] == 1)
 
