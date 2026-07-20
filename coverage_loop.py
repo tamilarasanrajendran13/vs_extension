@@ -218,7 +218,10 @@ def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
         say("  " + (before["report"].get("unsupported_note") or "unsupported project"))
         return {"supported": False, "report": before["report"]}
 
-    pending = list((before.get("gaps") or {}).get("untested") or [])
+    gaps0 = before.get("gaps") or {}
+    # Untested AND partial functions are both workable: partials can be pushed
+    # higher and re-hardened. (Only fully-covered ones are left alone.)
+    pending = list(gaps0.get("untested") or []) + list(gaps0.get("partial") or [])
     if paths:
         want = {str(p).replace("\\", "/") for p in paths}
         pending = [f for f in pending
@@ -295,7 +298,9 @@ def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
     after = scan_fn(repo, cfg)
     a_cov = after["report"].get("coverage_percent")
     partial = [a for a in added if a.get("status") == "partial"]
-    covered_files = sorted({a["file"] for a in added})
+    # Mutate the files we WROTE this run OR the ones we were pointed at (so a
+    # re-run on an already-tested function still gets mutated + hardened).
+    covered_files = sorted(set(a["file"] for a in added) | {f["file"] for f in pending})
     mut = _run_mutation(repo, covered_files, cfg, mutate_fn)
 
     # Mutation feedback: if survivors slip past the tests, feed them back to the
