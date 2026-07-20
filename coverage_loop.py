@@ -252,6 +252,23 @@ def run(tx, cfg, repo, workbench=None, db=None, paths=None, only=None,
         stem = Path(func["file"]).stem
         rel = "test/unit/test_%s_%s.py" % (stem, func["name"])
         best = None
+        # If a good test already exists for this function, make it the baseline -
+        # a re-run can then only IMPROVE on it, never replace it with a worse
+        # (e.g. over-mocked) attempt and delete the good one.
+        prior = Path(repo) / rel
+        if prior.exists():
+            try:
+                prior_code = prior.read_text(encoding="utf-8")
+                if measure is not None:
+                    pp, pf, pm = measure(rel, prior_code, func)
+                else:
+                    pp, pf, pm = _func_coverage(repo, rel, func, run_cmd)
+                if pp and pf > 0:
+                    best = {"frac": pf, "code": prior_code, "missed": pm}
+                    say("  = %s already at %.0f%% - keeping it as the baseline"
+                        % (func["name"], 100 * pf))
+            except Exception:
+                pass
         for attempt in range(1 + max_retries):
             user = (_user_prompt(func, src, det) if attempt == 0 or best is None
                     else _retry_prompt(func, src, det, best["missed"], repo))
@@ -471,6 +488,16 @@ def _self_test():
         ok("mutation feedback raised kill rate",
            rm["mutation_kill_rate"] == 1.0
            and any(a.get("status") == "mutation" for a in rm["tests_added"]))
+
+        # re-run protection: an existing good test is NOT clobbered by a worse attempt
+        (repo / "test" / "unit").mkdir(parents=True, exist_ok=True)
+        (repo / "test" / "unit" / "test_m_keep.py").write_text("# existing good test\n")
+        rrr = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
+                  say=lambda *_: None, scan_fn=scan(),
+                  measure=make_measure({"keep": [(True, 1.0, []), (True, 0.0, [2])]}))
+        ok("existing good test kept on a worse re-run",
+           (repo / "test" / "unit" / "test_m_keep.py").read_text() == "# existing good test\n"
+           and any(a["func"] == "keep" and a["status"] == "covered" for a in rrr["tests_added"]))
 
         # green but 0 coverage -> hollow -> discarded
         r2 = run(_FakeTx(), {}, str(repo), workbench=str(repo), only=["src/m.py::keep"],
