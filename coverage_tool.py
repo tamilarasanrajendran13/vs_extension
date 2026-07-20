@@ -238,14 +238,41 @@ def find_gaps(units, covered):
 
 # ------------------------------------------------------------------ mutation
 
+def _ensure_mutation():
+    """Find mutation.py even if it lives in a sibling/scripts dir, not just next
+    to this file. Returns (ok, searched_paths)."""
+    import importlib.util
+    if importlib.util.find_spec("mutation") is not None:
+        return True, []
+    here = Path(__file__).resolve().parent
+    roots = [here, here.parent, Path.cwd(), Path.cwd().parent]
+    searched = []
+    for r in roots:
+        for cand in (r, r / "scripts", r / "docket", r / "src"):
+            searched.append(str(cand))
+            if (cand / "mutation.py").exists():
+                if str(cand) not in sys.path:
+                    sys.path.insert(0, str(cand))
+                importlib.invalidate_caches()
+                if importlib.util.find_spec("mutation") is not None:
+                    return True, searched
+    return False, searched
+
+
 def mutation_scan(repo, impl_files, cfg=None, run=None):
     """A high coverage % still lies if the tests do not assert. Mutation is the
     truth check. Reuses the real engine."""
+    found, searched = _ensure_mutation()
+    if not found:
+        return {"skipped": "could not find mutation.py - put coverage_tool.py in the "
+                "same folder as mutation.py/loop.py (looked in: %s)"
+                % ", ".join(searched[:6]),
+                "kill_rate": None, "total": 0, "survived": 0, "survivors": []}
     try:
         import mutation
     except Exception as e:
-        return {"skipped": "mutation unavailable: %s" % e, "kill_rate": None,
-                "total": 0, "survived": 0, "survivors": []}
+        return {"skipped": "mutation.py found but failed to import: %s" % e,
+                "kill_rate": None, "total": 0, "survived": 0, "survivors": []}
     mcfg = dict(cfg or {})
     mcfg["developer"] = dict(mcfg.get("developer") or {})
     mcfg["developer"]["unit_command"] = ((cfg or {}).get("coverage") or {}).get(
