@@ -1850,7 +1850,7 @@ def _self_test() -> int:
     ok.append(("every artifact registered in the ledger", len(arts) >= 3))
     ok.append(("registered with a hash - 'was this edited?' is answerable",
                all(len(a["sha256"]) == 64 for a in arts)))
-    ok.append(("and with who wrote it", {a["actor"] for a in arts} == {"jira", "spec"}))
+    ok.append(("and with who wrote it", {a["actor"] for a in arts} == {"jira", "spec", "system"}))
 
     # A run that dies at the gate must still leave its record.
     tx = MockTransport([json.dumps(vague)])
