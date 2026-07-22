@@ -44,6 +44,16 @@ class RadiusError(RuntimeError):
     pass
 
 
+def _norm(p) -> str:
+    """One path normalization for the whole module: forward slashes (model and
+    Windows output both produce backslashes), strip a leading './' PREFIX -
+    lstrip('./') strips a character SET and mangles dotfiles like .env.example."""
+    p = str(p).replace("\\", "/").strip()
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
+
+
 def verify(radius: dict, repo_map: dict, project_path: Path | str | None = None) -> list[dict]:
     """
     Check the lead's declaration against what is actually on disk.
@@ -118,7 +128,7 @@ def verify(radius: dict, repo_map: dict, project_path: Path | str | None = None)
     seen: set[str] = set()
 
     for entry in (radius.get("may_touch") or []):
-        path = str(entry.get("path", "")).strip().lstrip("./")
+        path = _norm(entry.get("path", ""))
         kind = entry.get("kind", "modify")
 
         if not path:
@@ -155,7 +165,7 @@ def verify(radius: dict, repo_map: dict, project_path: Path | str | None = None)
                                "problem": f"kind must be modify or create, got {kind!r}"})
 
     for entry in (radius.get("must_not_touch") or []):
-        path = str(entry.get("path", "")).strip().lstrip("./")
+        path = _norm(entry.get("path", ""))
         if path in seen:
             violations.append({
                 "path": path,
@@ -180,17 +190,17 @@ def check_edit(radius: dict, path: str) -> dict:
     Globs are honoured in must_not_touch, because "tests/acceptance/**" is the
     frozen-test lock and it has to hold for files that do not exist yet.
     """
-    path = str(path).strip().lstrip("./")
+    path = _norm(path)
 
     for entry in (radius.get("must_not_touch") or []):
-        pat = str(entry.get("path", "")).strip().lstrip("./")
+        pat = _norm(entry.get("path", ""))
         if pat and (path == pat or fnmatch.fnmatch(path, pat)):
             return {"allow": False,
                     "reason": f"{path} is explicitly out of scope for this ticket: "
                               f"{entry.get('why', 'no reason recorded')}"}
 
     for entry in (radius.get("may_touch") or []):
-        pat = str(entry.get("path", "")).strip().lstrip("./")
+        pat = _norm(entry.get("path", ""))
         if pat and (path == pat or fnmatch.fnmatch(path, pat)):
             return {"allow": True, "reason": entry.get("why", "")}
 
@@ -317,6 +327,19 @@ def _self_test() -> int:
     v = verify(lost, {}, root)
     ok.append(("right name, wrong directory gets the full real path",
                any("src/test_generator/test_case_form.html" in x["problem"] for x in v)))
+
+    # Windows path-key class: backslashes and dotfiles must both survive.
+    back = {"may_touch": [{"path": "src\\test_generator\\test_case_form.html",
+                           "kind": "modify", "why": "x"}], "must_not_touch": []}
+    ok.append(("backslash paths normalized, not rejected", verify(back, {}, root) == []))
+    ok.append(("check_edit accepts backslash form of an in-radius file",
+               check_edit({"may_touch": [{"path": "src/a.py", "why": "x"}],
+                           "must_not_touch": []}, "src\\a.py")["allow"] is True))
+    (root / ".env.example").write_text("X=1")
+    dot = {"may_touch": [{"path": ".env.example", "kind": "modify", "why": "x"}],
+           "must_not_touch": []}
+    ok.append(("dotfiles are not mangled by prefix stripping",
+               verify(dot, {}, root) == []))
 
     create_existing = {"may_touch": [{"path": "onetest/registry.py", "kind": "create",
                                       "why": "x"}], "must_not_touch": []}
