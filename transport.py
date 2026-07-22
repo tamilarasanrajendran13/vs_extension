@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""
+Docket - transport.
+
+The loop asks for a model response. It never knows, and must never know, where
+that response came from. That ignorance is the whole point: today VS Code is the
+only way to reach the models, because your org has not enabled the Copilot CLI
+and vscode.lm exists only inside the extension host. The day that changes, you
+add a flag - not a rewrite.
+
+    StdioTransport  - VS Code hands us models over a pipe. Needs VS Code running.
+    ApiTransport    - we call the models ourselves. Needs nothing. Not yet possible.
+
+Protocol (StdioTransport), one JSON object per line:
+
+    us -> extension (stdout)
+        {"id": 1, "method": "chat", "params": {"role": "worker", "system": "...", "user": "..."}}
+        {"id": 2, "method": "models", "params": {}}
+        {"method": "progress", "params": {"text": "..."}}      <- no id = notification
+
+    extension -> us (stdin)
+        {"id": 1, "result": {"text": "...", "model": "claude-sonnet-4.6",
+                             "tokens_in": 1200, "tokens_out": 300}}
+        {"id": 1, "error": {"message": "..."}}
+
+No socket. No port. No firewall prompt, no endpoint-protection ticket, nothing
+for security to ask about. Same transport LSP and MCP use, for the same reasons.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+from typing import Any
+
+
+class TransportError(RuntimeError):
+    pass
+
+
+class Transport:
+    """A thing that turns (role, system, user) into text."""
+
+    def chat(self, role: str, system: str, user: str) -> dict:
+        raise NotImplementedError
+
+    def models(self) -> dict:
+        raise NotImplementedError
+
+    def progress(self, text: str) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class StdioTransport(Transport):
+    """
+    VS Code is the model provider. We are the driver.
+
+    stdout is the WIRE - nothing else may print to it. Anything that does will
+    corrupt the protocol, which is why everything human-readable goes to stderr.
+    """
+
+    # Provider hiccups worth retrying: empty responses, rate limits, timeouts.
+    # Pipe and protocol failures are NOT here on purpose - retrying a dead pipe
+    # or a desynced stream can only corrupt things further, so they re-raise
+    # immediately. An error that matches nothing here is assumed permanent
+    # (wrong model id, oversized input) and re-raises too: retrying the same
+    # doomed request just burns quota.
+    TRANSIENT = ("no choices", "rate limit", "rate-limit", "429", "timeout",
+                 "timed out", "overloaded", "temporarily", "try again")
+    CHAT_ATTEMPTS = 3
+    RETRY_WAIT = 2  # seconds; grows linearly per attempt
+
+    def __init__(self, stdin=None, stdout=None):
+        self._in = stdin or sys.stdin
+        self._out = stdout or sys.stdout
+        self._id = 0
+        self._lock = threading.Lock()
+
+    def _send(self, obj: dict) -> None:
+        with self._lock:
+            self._out.write(json.dumps(obj) + "\n")
+            self._out.flush()
+
+    def _request(self, method: str, params: dict) -> Any:
+        self._id += 1
+        rid = self._id
+        self._send({"id": rid, "method": method, "params": params})
+
+        # The gateway answers in order. A line that isn't for us means the
+        # protocol has desynced - fail loudly rather than guess.
+        line = self._in.readline()
+        if not line:
+            raise TransportError(
+                "gateway closed the pipe. VS Code window closed, or the extension crashed."
+            )
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise TransportError(f"gateway sent non-JSON: {line[:200]!r}") from e
+
+        if msg.get("id") != rid:
+            raise TransportError(f"protocol desync: asked for id={rid}, got {msg.get('id')}")
+        if "error" in msg:
+            raise TransportError(f"{method} failed: {msg['error'].get('message')}")
+        return msg.get("result")
+
+    def chat(self, role: str, system: str, user: str) -> dict:
+        for attempt in range(1, self.CHAT_ATTEMPTS + 1):
+            try:
+                return self._request("chat", {"role": role, "system": system,
+                                              "user": user})
+            except TransportError as e:
+                msg = str(e).lower()
+                if ("closed the pipe" in msg or "desync" in msg
+                        or "non-json" in msg
+                        or attempt == self.CHAT_ATTEMPTS
+                        or not any(t in msg for t in self.TRANSIENT)):
+                    raise
+                wait = self.RETRY_WAIT * attempt
+                self.progress("chat attempt %d/%d failed (%s) - retrying in %ds"
+                              % (attempt, self.CHAT_ATTEMPTS, str(e)[:120], wait))
+                time.sleep(wait)
+
+    def models(self) -> dict:
+        return self._request("models", {})
+
+    def progress(self, text: str) -> None:
+        # Notification: no id, no reply expected, never blocks.
+        self._send({"method": "progress", "params": {"text": text}})
+
+
+class ApiTransport(Transport):
+    """
+    We call the models ourselves. No VS Code, no extension, no window open.
+    `python loop.py --api PROJ-110` from cron.
+
+    Not reachable today: your org has not enabled the Copilot CLI, and direct API
+    keys are a separate approval. This class exists so that when either lands,
+    the loop above it does not change by a single line.
+    """
+
+    def __init__(self, base_url: str | None = None, api_key: str | None = None):
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def chat(self, role: str, system: str, user: str) -> dict:
+        raise NotImplementedError(
+            "ApiTransport needs direct model access. Today the only path to the models "
+            "is vscode.lm, which is why --stdio is the default. When Copilot CLI, a "
+            "LiteLLM proxy, or API keys become available, implement this method and "
+            "nothing else in Docket changes."
+        )
+
+    def models(self) -> dict:
+        raise NotImplementedError
+
+
+class MockTransport(Transport):
+    """Scripted replies. Lets the entire loop be tested with no VS Code at all."""
+
+    def __init__(self, replies: list[str] | None = None):
+        self.replies = list(replies or [])
+        self.calls: list[dict] = []
+        self.progress_log: list[str] = []
+
+    def chat(self, role: str, system: str, user: str) -> dict:
+        self.calls.append({"role": role, "system": system, "user": user})
+        if not self.replies:
+            raise TransportError("MockTransport ran out of scripted replies")
+        return {
+            "text": self.replies.pop(0),
+            "model": f"mock-{role}",
+            "tokens_in": len(system + user) // 4,
+            "tokens_out": 64,
+        }
+
+    def models(self) -> dict:
+        return {
+            "worker": {"family": "mock-sonnet", "id": "mock-sonnet"},
+            "judge": {"family": "mock-opus", "id": "mock-opus"},
+            "second_plan": {"family": "mock-gpt", "id": "mock-gpt"},
+            "cheap": {"family": "mock-mini", "id": "mock-mini"},
+        }
+
+    def progress(self, text: str) -> None:
+        self.progress_log.append(text)
+
+
+def build(kind: str = "stdio", **kw) -> Transport:
+    return {"stdio": StdioTransport, "api": ApiTransport, "mock": MockTransport}[kind](**kw)
+
+
+# ==================================================================== self-test
+
+def _self_test() -> int:
+    import io
+
+    checks = []
+
+    def ok(name, cond):
+        checks.append((name, bool(cond)))
+
+    def stdio(*lines):
+        """A StdioTransport wired to scripted gateway replies, zero wait."""
+        tx = StdioTransport(stdin=io.StringIO("\n".join(lines) + "\n"),
+                            stdout=io.StringIO())
+        tx.RETRY_WAIT = 0
+        return tx
+
+    # 1. transient error, then success -> retried, caller never sees the error
+    tx = stdio('{"id": 1, "error": {"message": "Response contained no choices"}}',
+               '{"id": 2, "result": {"text": "recovered"}}')
+    r = tx.chat("worker", "s", "u")
+    ok("transient chat error is retried", r["text"] == "recovered")
+    sent = tx._out.getvalue()
+    ok("retry announced on the progress channel", '"progress"' in sent
+       and "retrying" in sent)
+
+    # 2. transient error every time -> gives up after CHAT_ATTEMPTS
+    tx = stdio('{"id": 1, "error": {"message": "429 rate limit"}}',
+               '{"id": 2, "error": {"message": "429 rate limit"}}',
+               '{"id": 3, "error": {"message": "429 rate limit"}}')
+    try:
+        tx.chat("worker", "s", "u")
+        ok("persistent transient error still raises", False)
+    except TransportError as e:
+        ok("persistent transient error still raises", "429" in str(e))
+    ok("bounded attempts", tx._id == StdioTransport.CHAT_ATTEMPTS)
+
+    # 3. permanent-looking error -> no retry, fails on the first attempt
+    tx = stdio('{"id": 1, "error": {"message": "model quota misconfigured"}}',
+               '{"id": 2, "result": {"text": "never asked"}}')
+    try:
+        tx.chat("worker", "s", "u")
+        ok("permanent error not retried", False)
+    except TransportError:
+        ok("permanent error not retried", tx._id == 1)
+
+    # 4. dead pipe -> immediate failure, never retried
+    tx = stdio()
+    tx._in = io.StringIO("")
+    try:
+        tx.chat("worker", "s", "u")
+        ok("dead pipe fails fast", False)
+    except TransportError as e:
+        ok("dead pipe fails fast", "closed the pipe" in str(e) and tx._id == 1)
+
+    # 5. non-chat requests never retry (models goes through _request directly)
+    tx = stdio('{"id": 1, "error": {"message": "timeout"}}')
+    try:
+        tx.models()
+        ok("models() does not retry", False)
+    except TransportError:
+        ok("models() does not retry", tx._id == 1)
+
+    # 6. MockTransport basics still hold
+    mt = MockTransport(["hello"])
+    ok("mock replies in order", mt.chat("worker", "s", "u")["text"] == "hello")
+    try:
+        mt.chat("worker", "s", "u")
+        ok("mock exhaustion raises", False)
+    except TransportError:
+        ok("mock exhaustion raises", True)
+
+    passed = sum(1 for _, c in checks if c)
+    for name, c in checks:
+        print("  [{}] {}".format("ok " if c else "XX", name))
+    print("\n{}/{} checks passed".format(passed, len(checks)))
+    return 0 if passed == len(checks) else 1
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Docket transport")
+    ap.add_argument("--self-test", action="store_true")
+    args = ap.parse_args()
+    if args.self_test:
+        sys.exit(_self_test())
+    ap.print_help()
