@@ -468,9 +468,13 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                     == "each_task")
 
     done, escalated = [], []
+    status = {}
+    say("  {} task(s) planned:".format(len(tasks)))
+    _board(tasks, status, say)
     for task in tasks:
         say("")
         say("  {} [{}] {}".format(task["id"], task["action"], task["file"]))
+        status[task["id"]] = "in progress"
         touched = set()
         tools = _edit_tools(project_path, radius_paths, cfg, touched)
         attempt = 0
@@ -500,6 +504,7 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                 say("  {} disputes the plan: {}".format(
                     task["id"], str(prob)[:80]))
                 escalated.append(task["id"])
+                status[task["id"]] = "DISPUTED PLAN"
                 cp.rollback(last_green)
                 say("  {} rolled back to last green state ({}).".format(
                     task["id"], str(last_green)[:12]))
@@ -521,6 +526,7 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                            prompt_version=roster.stamp(A), db=db)
                 say("  {} green - checkpointed {}".format(task["id"], sha[:7]))
                 done.append(task["id"])
+                status[task["id"]] = "GREEN (attempt {})".format(attempt)
                 break
             if attempt > max_retries:
                 ledger.log(run_id, ticket_id, AGENT_NAME, "escalation",
@@ -529,6 +535,8 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
                 say("  {} still failing after {} attempt(s) - escalating.".format(
                     task["id"], attempt))
                 escalated.append(task["id"])
+                status[task["id"]] = "ESCALATED ({} red after {} attempts)".format(
+                    "scoped tests" if scoped_red else "suite", attempt)
                 # Leave no wreckage: the next task must start from the last
                 # green state, or one failure cascades into every task after it
                 # (the whole-suite gate can never pass on a broken tree).
@@ -539,9 +547,16 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
             # Feed the failure back - a retry that cannot see the error is a
             # coin flip; a retry that reads the traceback is a fix.
             failure = _failure_note(results)
-            say("  {} failing ({}) - retrying with the failure fed back.".format(
-                task["id"], "scoped tests" if scoped_red else "full suite"))
+            if (out or {}).get("budget_exhausted"):
+                failure += ("\n\nYou also ran OUT OF LOOKS last attempt. Budget "
+                            "them this time: read ONLY the file(s) this task "
+                            "names, make the edits, write the test, run test "
+                            "once on your test file, then done.")
+            say("  {} failing ({} red) - retrying; the failure details go into "
+                "the next attempt's prompt.".format(
+                    task["id"], "scoped tests" if scoped_red else "full suite"))
 
+        _board(tasks, status, say)
         if observe_each:
             _observe_acceptance(run_id, ticket_id, project_path, dev_dir, cfg, say)
 
@@ -555,13 +570,34 @@ def run_developer(tx, cfg, run_id, ticket_id, ticket_text, spec, patterns,
     (dev_dir / "evidence").mkdir(parents=True, exist_ok=True)
     (dev_dir / "evidence" / "jira-comment.txt").write_text(comment, encoding="utf-8")
 
+    outcome, reason = gate["outcome"], gate.get("reason")
     if escalated:
         say("  tasks escalated (unit tests never went green): {}".format(
             ", ".join(escalated)))
+        # A green suite after a rollback only proves the rollback worked -
+        # the escalated work was UNDONE, not delivered. Reporting 'pass' here
+        # lets a hollow slice merge upstream and the reviewer meets an empty
+        # diff. The unit_tests GATE row stays truthful (the suite IS green);
+        # the STAGE outcome must say the work is incomplete.
+        outcome = "fail"
+        reason = "{} task(s) escalated - work incomplete: {}".format(
+            len(escalated), ", ".join(escalated))
+        say("  developer stage: FAIL ({})".format(reason))
 
-    return {"outcome": gate["outcome"], "tasks_done": done,
+    return {"outcome": outcome, "reason": reason, "tasks_done": done,
             "tasks_escalated": escalated, "unit": results,
             "jira_comment": comment}
+
+
+def _board(tasks, status, say):
+    """The task board: every planned task with its current status, reprinted
+    after each task so the channel always shows where the run stands - the
+    'plan with live checkmarks' a human expects from an agent."""
+    say("  +-- tasks " + "-" * 48)
+    for t in tasks:
+        say("  | {:<8} {:<26} [{}] {}".format(
+            t["id"], (status.get(t["id"]) or "pending"), t["action"], t["file"]))
+    say("  +" + "-" * 57)
 
 
 def _cap(text, limit, label):
@@ -865,12 +901,18 @@ def _self_test():
         (dev_dir / "test" / "acceptance").mkdir(parents=True)
         (dev_dir / "test" / "acceptance" / "test_acc.py").write_text("def test_a():\n    assert 1\n")
 
+        says = []
         res = run_developer(_FakeTx(), cfg, "OT-9-r", "OT-9", "add source", {}, "",
                             {}, "onetest", str(proj), str(td / "wb"), None, "ledger.db",
-                            lambda *_: None)
+                            says.append)
         _run = real_run
 
         ok("developer completes with a pass", res["outcome"] == "pass")
+        ok("task board printed with the plan up front",
+           any("+-- tasks" in s for s in says)
+           and any("pending" in s for s in says))
+        ok("task board updates as tasks go green",
+           any("GREEN (attempt 1)" in s for s in says))
         ok("both tasks done", res["tasks_done"] == ["task-01", "task-02"])
         ok("a unit_tests gate was recorded",
            any(g["name"] == "unit_tests" and g["outcome"] == "pass" for g in led.gates))
@@ -965,6 +1007,12 @@ def _self_test():
         ok("plan dispute recorded with the reason",
            any(l["payload"].get("text") == "developer disputes the plan"
                for l in led.logs))
+        # THE hollow-pass fix: every task was escalated (rolled back), so the
+        # suite is green - but green-after-rollback is work UNDONE. The stage
+        # must fail, or the lead merges an empty slice and the reviewer meets
+        # an empty diff (exactly what happened on the first real e2e run).
+        ok("escalations override a green suite - hollow pass is a FAIL",
+           res["outcome"] == "fail" and "work incomplete" in res["reason"])
 
     passed = sum(1 for _, c in checks if c)
     for name, c in checks:

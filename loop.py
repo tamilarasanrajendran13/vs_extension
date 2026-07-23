@@ -802,9 +802,12 @@ def run_ticket(tx, cfg: dict, ticket_id: str, ticket_text: str,
     try:
         import run_log as _run_log
         _rlog = _run_log.open_for(ws, run_id, ticket_id, project=project, release=release)
-        say = _run_log.tree(tx.progress, _rlog)
-    except Exception:
-        pass # logging must never block a run
+        say = _run_log.tee(tx.progress, _rlog)
+    except Exception as e:
+        # Logging must never block a run - but a dead log must be SAID, or the
+        # evidence file sits there header-only for weeks (a .tree/.tee typo did
+        # exactly that: swallowed here, every run's log was empty).
+        tx.progress(f"  [log] run log not capturing ({e}) - channel only")
 
     say(f"run {run_id}")
     say(f"project: {project}" + (f"  release: {release}" if release else ""))
@@ -2011,6 +2014,14 @@ def _self_test() -> int:
     ok.append(("plan returned", w is not None and len(w["steps"]) == 1))
     ok.append(("planner receives precomputed repo knowledge",
                "REPO KNOWLEDGE" in tx.calls[0]["user"]))
+
+    # The wiring loop.py actually calls on run_log - an attribute typo here was
+    # swallowed by the never-block-a-run guard and left every evidence log
+    # header-only. Assert the names, so the guard cannot hide them again.
+    import run_log as _rl_check
+    ok.append(("run_log has the names run_ticket wires (open_for + tee)",
+               hasattr(_rl_check, "open_for") and hasattr(_rl_check, "tee")
+               and callable(_rl_check.tee)))
     pd = tmp / "development" / "R2025.10" / "P-1" / "plan"
     ok.append(("the plan a developer follows is on disk",
                (pd / "implementation-plan.md").exists()))
