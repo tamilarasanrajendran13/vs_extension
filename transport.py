@@ -97,6 +97,8 @@ class StdioTransport(Transport):
             self._out.flush()
 
     def _read_loop(self) -> None:
+        import os
+        debug = bool(os.environ.get("DOCKET_TRANSPORT_DEBUG"))
         try:
             while True:
                 line = self._in.readline()
@@ -108,20 +110,35 @@ class StdioTransport(Transport):
                     msg = json.loads(line)
                 except json.JSONDecodeError:
                     raise TransportError(f"gateway sent non-JSON: {line[:200]!r}")
+                if debug:
+                    print(f"[transport] reply id={msg.get('id')}", file=sys.stderr)
                 q = self._pending.pop(msg.get("id"), None)
                 if q is not None:
-                    q.put(msg)
+                    try:
+                        q.put_nowait(msg)
+                    except _queue.Full:
+                        pass  # duplicate reply for one id - never block the router
                 else:
                     # Reply before its waiter registered (scripted tests) or an
                     # id we never sent. Park it; a real desync surfaces as the
                     # requester timing out on the pipe closing, never as a
                     # misdelivered answer.
                     self._orphans[msg.get("id")] = msg
-        except TransportError as e:
-            self._reader_dead = e
+        except BaseException as e:
+            # ANY exception here, not just TransportError: a router that dies
+            # without waking its waiters turns every future request into a
+            # silent forever-hang. Loud beats stuck.
+            err = (e if isinstance(e, TransportError)
+                   else TransportError(f"transport reader died: {e!r}"))
+            self._reader_dead = err
             for q in list(self._pending.values()):
-                q.put(e)
+                try:
+                    q.put_nowait(err)
+                except _queue.Full:
+                    pass
             self._pending.clear()
+            if debug or not isinstance(e, TransportError):
+                print(f"[transport] reader stopped: {err}", file=sys.stderr)
 
     def _request(self, method: str, params: dict) -> Any:
         with self._lock:
