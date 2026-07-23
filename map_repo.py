@@ -83,20 +83,45 @@ _GIT_WARNED = False
 
 
 def git(args: list[str], cwd: Path, timeout: int = 60) -> str:
+    """Run git BOUNDED and never-blocking.
+
+    The naive subprocess.run(timeout=...) hangs FOREVER on Windows when git
+    spawns a background child that inherits our pipes: on timeout Python kills
+    git, then waits WITHOUT a timeout for the pipes to close - and the
+    grandchild (git-for-Windows autostarts an fsmonitor daemon on `status`)
+    keeps them open. Seen in the field as a run frozen inside tree_hash with
+    the 60s timeout long past. So: fsmonitor disabled for our calls, stdin
+    detached, explicit two-stage reaping, and on an unreapable child we
+    abandon it and return "" - a missing co-change map beats a dead pipeline.
+    """
     global _GIT_WARNED
+    cmd = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", *args]
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                           text=True, timeout=timeout)
-        return p.stdout.strip() if p.returncode == 0 else ""
-    except subprocess.TimeoutExpired:
-        _note(f"git {args[0]} TIMED OUT after {timeout}s in {cwd}")
-        return ""
+        p = subprocess.Popen(cmd, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True)
     except Exception as e:
         if not _GIT_WARNED:
             _GIT_WARNED = True
             _note(f"git unavailable ({e.__class__.__name__}: {e}) - "
                   f"falling back to content hashing, no co-change map")
         return ""
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        try:
+            out, _ = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            _note(f"git {args[0]} unreapable after kill (a grandchild holds "
+                  f"the pipe) - abandoning it")
+            return ""
+        _note(f"git {args[0]} TIMED OUT after {timeout}s in {cwd}")
+        return ""
+    except Exception as e:
+        _note(f"git {args[0]} failed: {e}")
+        return ""
+    return out.strip() if p.returncode == 0 else ""
 
 
 def content_hash(project_path: Path) -> str:
