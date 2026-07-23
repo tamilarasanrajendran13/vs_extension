@@ -161,7 +161,10 @@ function runLoop(cfg, args, out) {
         // so replies never interleave mid-message.
         (async () => {
           const t0 = Date.now();
-          if (msg.method === 'chat') {
+          // Per-request tracing is opt-in (docket.debugChannel) - two lines
+          // per model call drowns the run's story. FAILURES always print.
+          const dbg = vscode.workspace.getConfiguration('docket').get('debugChannel', false);
+          if (dbg && msg.method === 'chat') {
             out.appendLine(`[gw] #${msg.id} chat (${(msg.params.role || 'worker')}) ...`);
           }
           let reply, failed = null;
@@ -175,7 +178,7 @@ function runLoop(cfg, args, out) {
             failed = detail;
             reply = JSON.stringify({ id: msg.id, error: { message: detail } }) + '\n';
           }
-          if (msg.method === 'chat') {
+          if (msg.method === 'chat' && (dbg || failed)) {
             out.appendLine(`[gw] #${msg.id} ${failed ? 'FAILED: ' + failed.slice(0, 120) : 'answered'} (${Date.now() - t0}ms)`);
           }
           if (child.stdin.writable) child.stdin.write(reply);
