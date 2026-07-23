@@ -100,11 +100,25 @@ def load_patterns(cfg: dict, tx, project: str, project_path: Path | None,
     cache = workbench / "cache" / project / "repo_map.json"
     say("  [startup] repo map: scanning (cache {})".format(
         "present" if cache.exists() else "absent"))
+    # Heartbeat on a side thread: if these ticks appear, the scan is genuinely
+    # running; if the scan's stderr breadcrumbs appear but these ticks do NOT,
+    # stdout (the say/progress pipe) is jammed - a different bug entirely.
+    import threading as _th
+    _done = _th.Event()
+
+    def _tick():
+        n = 0
+        while not _done.wait(10):
+            n += 10
+            say(f"  [startup] ... scan still running ({n}s)")
+    _th.Thread(target=_tick, daemon=True).start()
     try:
         m, was_cached = map_repo.load_or_scan(Path(project_path), cache)
     except Exception as e:
         say(f"  NO PATTERNS: repo scan failed: {e}")
         return ""
+    finally:
+        _done.set()
     say("  [startup] repo map {} ({} modules)".format(
         "cached" if was_cached else "rescanned", m["stats"]["modules"]))
 

@@ -72,12 +72,30 @@ def _walk_files(project_path: Path):
             yield Path(base) / name
 
 
+def _note(text: str) -> None:
+    """Breadcrumb on STDERR - deliberately not the transport. If stdout ever
+    jams, these still reach the gateway's output channel, which is exactly
+    when you need them."""
+    print(f"[map] {text}", file=sys.stderr, flush=True)
+
+
+_GIT_WARNED = False
+
+
 def git(args: list[str], cwd: Path, timeout: int = 60) -> str:
+    global _GIT_WARNED
     try:
         p = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
                            text=True, timeout=timeout)
         return p.stdout.strip() if p.returncode == 0 else ""
-    except Exception:
+    except subprocess.TimeoutExpired:
+        _note(f"git {args[0]} TIMED OUT after {timeout}s in {cwd}")
+        return ""
+    except Exception as e:
+        if not _GIT_WARNED:
+            _GIT_WARNED = True
+            _note(f"git unavailable ({e.__class__.__name__}: {e}) - "
+                  f"falling back to content hashing, no co-change map")
         return ""
 
 
@@ -333,12 +351,16 @@ def scan(project_path: Path) -> dict:
             # rubbed out.
             other_files.append(rel)
 
+    _note(f"walk+parse done ({len(modules)} modules) - git churn/co-change next")
     churn, co = churn_and_cochange(project_path)
+    _note("churn done - tree hash next")
+    th = tree_hash(project_path)
+    _note("tree hash done")
 
     return {
         "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "project_path": str(project_path),
-        "tree_hash": tree_hash(project_path),
+        "tree_hash": th,
         "modules": modules,
         "families": find_families(modules),
         "entry_points": sorted(entry_points),
@@ -361,15 +383,21 @@ def load_or_scan(project_path: Path, cache_path: Path, force: bool = False) -> t
     """Returns (map, was_cached). Rescanning an unchanged tree is wasted seconds."""
     project_path = Path(project_path).resolve()
     if not force and cache_path.exists():
+        _note(f"validating cache against {project_path}")
         try:
             cached = json.loads(cache_path.read_text())
             if cached.get("tree_hash") == tree_hash(project_path):
+                _note("cache fresh")
                 return cached, True
         except Exception:
             pass
+        _note("cache stale - rescanning")
+    _note(f"scan starting: {project_path}")
     m = scan(project_path)
+    _note(f"scan finished: {m['stats']}")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(m, indent=1))
+    _note("cache written")
     return m, False
 
 
