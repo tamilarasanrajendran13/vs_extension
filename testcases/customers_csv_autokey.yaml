@@ -1,0 +1,14 @@
+# Same data, but key_columns omitted so the framework auto-detects the key.
+# It should pick customer_id (unique, non-null, id-like name).
+name: customers_csv_autokey
+engine: polars
+format: csv
+source:
+  path: ../sample_data/customers_source.csv
+target:
+  path: ../sample_data/customers_target.csv
+# key_columns intentionally omitted -> auto-detected
+options:
+  schema_check: true
+  null_check: true
+  duplicate_check: true

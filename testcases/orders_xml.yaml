@@ -1,0 +1,16 @@
+# XML-to-XML comparison. Records are flattened to rows via record_path.
+# Each <order> under the root <orders> becomes one row; child elements
+# (order_id, customer, amount, status) become columns.
+name: orders_xml_compare
+engine: polars
+format: xml
+record_path: ./order       # relative to the XML root element (<orders>)
+source:
+  path: ../sample_data/orders_source.xml
+target:
+  path: ../sample_data/orders_target.xml
+key_columns: [order_id]
+options:
+  schema_check: true
+  null_check: true
+  duplicate_check: true

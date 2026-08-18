@@ -1,0 +1,6 @@
+customer_id,name,email,balance,country
+1,Alice,alice@example.com,100.50,US
+2,Bob,bob@example.com,200.00,UK
+3,Carol,carol@example.com,,US
+4,Dave,dave@example.com,50.25,CA
+5,Eve,eve@example.com,75.00,US

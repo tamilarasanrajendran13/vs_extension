@@ -1,0 +1,17 @@
+# CSV-to-CSV comparison with an explicit key column and all checks enabled.
+name: customers_csv_compare
+engine: polars          # polars (default) or spark
+format: csv
+source:
+  path: ../sample_data/customers_source.csv
+target:
+  path: ../sample_data/customers_target.csv
+key_columns: [customer_id]
+options:
+  schema_check: true
+  null_check: true
+  duplicate_check: true
+  trim_strings: true
+  case_insensitive: false
+  number_tolerance: 0.0
+  ignore_columns: []

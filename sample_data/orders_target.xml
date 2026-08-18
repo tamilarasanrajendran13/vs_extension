@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<orders>
+  <order>
+    <order_id>1001</order_id>
+    <customer>Alice</customer>
+    <amount>250.00</amount>
+    <status>shipped</status>
+  </order>
+  <order>
+    <order_id>1002</order_id>
+    <customer>Bob</customer>
+    <amount>99.99</amount>
+    <status>shipped</status>
+  </order>
+  <order>
+    <order_id>1003</order_id>
+    <customer>Carol</customer>
+    <amount>500.00</amount>
+    <status>shipped</status>
+  </order>
+  <order>
+    <order_id>1005</order_id>
+    <customer>Erin</customer>
+    <amount>42.00</amount>
+    <status>pending</status>
+  </order>
+</orders>
