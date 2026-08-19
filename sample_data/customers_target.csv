@@ -1,6 +1,0 @@
-customer_id,name,email,balance,country
-1,Alice,alice@example.com,100.50,US
-2,Bob,bob@newmail.com,200.00,UK
-3,Carol,carol@example.com,,US
-4,Dave,dave@example.com,50.25,CA
-6,Frank,frank@example.com,20.00,DE
