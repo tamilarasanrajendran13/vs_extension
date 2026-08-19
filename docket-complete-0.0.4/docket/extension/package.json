@@ -1,0 +1,274 @@
+{
+  "name": "docket",
+  "displayName": "Docket",
+  "description": "Ticket to verified PR, with an append-only ledger of every gate, decision and cost.",
+  "icon": "media/docket-icon.png",
+  "version": "0.0.4",
+  "publisher": "docket",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test:host": "node test/host/run_host_tests.js --check",
+    "test:host-probe": "node test/host/host_probe.js --probe",
+    "test:host-mocked": "node scripts/host_suite_mocked.js --check",
+    "test:level2": "node scripts/level2_suite.js --check"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "docket.showHub",
+        "title": "Command Hub",
+        "category": "Docket",
+        "icon": "$(extensions)"
+      },
+      {
+        "command": "docket.run",
+        "title": "Run Ticket",
+        "category": "Docket",
+        "icon": "$(play)"
+      },
+      {
+        "command": "docket.runLocal",
+        "title": "Run Ticket From File (no Jira)",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.stopRun",
+        "title": "Stop Run",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.draftContext",
+        "title": "Draft Project Context",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.clone",
+        "title": "Clone Project",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.selectProject",
+        "title": "Select Project",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.probe",
+        "title": "Run Preflight Probe",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.dashboard",
+        "title": "Open Dashboard",
+        "category": "Docket",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "docket.serve",
+        "title": "Start Server",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.serveStop",
+        "title": "Stop Server",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.coverage",
+        "title": "Scan Coverage",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.resetProject",
+        "title": "Reset Project Tree (discard all changes)",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.showKnowledgeMap",
+        "title": "Knowledge Map",
+        "category": "Docket",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "docket.showKnowledge",
+        "title": "Show Knowledge",
+        "category": "Docket",
+        "icon": "$(book)"
+      },
+      {
+        "command": "docket.resume",
+        "title": "Resume Run",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.showRunMonitor",
+        "title": "Show Run Monitor",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.cancelRun",
+        "title": "Cancel Run",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.refreshRunStatus",
+        "title": "Refresh Run Status",
+        "category": "Docket",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "docket.openFlowReport",
+        "title": "Open Flow Report",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.showRunFlow",
+        "title": "Show Run Flow",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.clearMonitor",
+        "title": "Start Clean",
+        "category": "Docket",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "docket.showAllCommands",
+        "title": "Show All Commands",
+        "category": "Docket",
+        "icon": "$(menu)"
+      },
+      {
+        "command": "docket.showRunDiff",
+        "title": "Show Run Diff",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.ship",
+        "title": "Ship Run",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.reviewMyDiff",
+        "title": "Review My Diff",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.runWithOverrides",
+        "title": "Run with Overrides",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.runQueue",
+        "title": "Run Ticket Queue",
+        "category": "Docket"
+      },
+      {
+        "command": "docket.indexProject",
+        "title": "Index Project",
+        "category": "Docket"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "docket.showHub",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@0"
+        },
+        {
+          "command": "docket.run",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "docket.refreshRunStatus",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@2"
+        },
+        {
+          "command": "docket.dashboard",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@3"
+        },
+        {
+          "command": "docket.showRunFlow",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@4"
+        },
+        {
+          "command": "docket.clearMonitor",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@5"
+        },
+        {
+          "command": "docket.showAllCommands",
+          "when": "view == docketRunMonitor",
+          "group": "navigation@6"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "docket",
+          "title": "Docket",
+          "icon": "media/docket-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "docket": [
+        {
+          "type": "webview",
+          "id": "docketRunMonitor",
+          "name": "Docket"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Docket",
+      "properties": {
+        "docket.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python used by Scan Coverage and the dashboard webview. Empty = 'python' on Windows, 'python3' elsewhere. Pin your venv's absolute path (spawned processes do not inherit an activated venv)."
+        },
+        "docket.cwd": {
+          "type": "string",
+          "default": "",
+          "description": "Docket workbench folder (the one holding loop.py and payload_builder.py). Empty = auto-detect from the workspace."
+        },
+        "docket.db": {
+          "type": "string",
+          "default": "ledger.db",
+          "description": "Ledger database path, relative to the workbench folder unless absolute."
+        },
+        "docket.debugChannel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Trace every model request in the Docket channel ([gw] #N chat/answered with latency). Failures always print regardless. Turn on when diagnosing hangs or provider errors."
+        },
+        "docket.modelTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "How long one model request may run before the gateway cancels it and answers with a typed 'timeout' error. Only that request is cancelled - others in flight keep streaming. Keep it under loop.py's own 900s reply timeout so the loop learns a named timeout instead of a desync. 0 disables the timer."
+        },
+        "docket.stopGraceMs": {
+          "type": "number",
+          "default": 10000,
+          "description": "How long 'Docket: Stop Run' waits after SIGTERM for loop.py to unwind and record the abort before its whole process tree is killed. Raise it if a stage needs longer to restore a half-applied mutant."
+        }
+      }
+    }
+  }
+}

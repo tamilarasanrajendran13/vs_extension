@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<!--
+  Docket dashboard - the shared bundle.
+
+  MULTI-PAGE, SINGLE FILE. Those are not in tension, and the reason matters:
+  this file gets emailed to someone who opens it on a locked-down laptop,
+  possibly offline, and installs nothing. Real navigation, real pages, real back
+  button, real deep links (#/runs, #/cost) - all client side, all in one
+  attachment. A second file is a second thing to lose.
+
+  ONE frontend, hosted three ways, and it never learns which one it is in:
+
+    report.py       inlines app.css, app.js and the payload -> one .html
+    the webview     serves this file, posts the payload in, re-posts every gate
+    a local server  reads ledger.db, serves this file. only if it earns its keep
+
+  Do not put pipeline logic in here. The moment this file learns what a ticket
+  is, the dashboard is welded to one host - the same mistake the gateway is
+  under standing orders not to make.
+
+  The double-underscored DOCKET tokens are placeholders that report.py replaces.
+  Opened raw in a browser they are inert and the page waits for a postMessage.
+  (This comment spells them out the long way on purpose: report.py asserts that
+  no placeholder token survives into the output, and a comment naming one
+  literally would defeat its own test.)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docket - pipeline register</title>
+<style>__DOCKET_CSS__</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap masthead-in">
+    <div class="wordmark">Docket</div>
+    <div class="scope"></div>
+    <div class="stamp" style="white-space: pre-line"></div>
+  </div>
+  <nav class="nav" aria-label="Dashboard sections">
+    <div class="wrap nav-in" role="tablist"></div>
+  </nav>
+  <!-- The now-line: one honest sentence about what is running right now.
+       ACTIVE is earned by four agreeing authorities (see nowLineModel);
+       hosts that cannot verify a process say so instead. -->
+  <div class="wrap nowline" id="nowline" role="status" aria-live="polite"></div>
+</header>
+
+<main class="wrap">
+
+  <!-- ================= OVERVIEW ================= -->
+  <section class="page" id="page-overview" data-title="Overview">
+    <!-- V4.4: the ledger-shape warning leads the page, as approved - a
+         reader learns what this ledger cannot answer before any figure. -->
+    <div class="shape"></div>
+    <div class="lead">
+      <div class="lead-figure">
+        <div class="eyebrow"></div>
+        <div class="value"></div>
+        <div class="note"></div>
+      </div>
+      <div class="figures"></div>
+    </div>
+
+    <div class="run-status-strip" hidden></div>
+
+    <!-- V4.4: the folded verdict line - every run's ending through the ONE
+         verdict fold (run_verdict), beside the raw outcome column above. -->
+    <div class="verdict-line"></div>
+
+    <!-- V4.4 Needs You: the decisions only a human can take, derived from
+         the workflow authority (latest workflow per ticket) and the folded
+         run verdicts - never from a raw running row. -->
+    <div class="section">
+      <div class="section-head">
+        <h2>Needs you</h2>
+        <div class="sub needs-you-basis"></div>
+      </div>
+      <div class="panel"><div class="needs-you"></div></div>
+      <!-- V4.4: the supersession explanation lives BENEATH the card, as a
+           full tab-intro paragraph - never a small italic footer row. -->
+      <div class="needs-you-superseded"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>Key metrics</h2>
+        <div class="sub kpi-scope"></div>
+      </div>
+      <div class="kpis"></div>
+    </div>
+
+    <!-- No data-needs here, on purpose. data-needs hides a section when its
+         payload key is null, which is right for a table nobody has - but
+         "this ledger has no findings table" is the one thing a reader of a
+         bug-finding tool most needs told. The section stays and says so. -->
+    <div class="section">
+      <div class="two-up">
+        <div>
+          <div class="section-head">
+            <h2>What Docket found</h2>
+            <div class="sub">lifecycle and taxonomy, counted separately, never summed</div>
+          </div>
+          <div class="panel findings-panel"><div class="findings"></div></div>
+        </div>
+        <div>
+          <div class="section-head">
+            <h2>What stopped runs</h2>
+            <div class="sub">the one authoritative failure-taxonomy panel (Gates links here)</div>
+          </div>
+          <div class="panel"><div class="tax"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" data-needs="trend">
+      <div class="section-head">
+        <h2>Across releases</h2>
+        <div class="sub">The only view here that is not a snapshot.</div>
+      </div>
+      <div class="trends"></div>
+    </div>
+  </section>
+
+  <!-- ================= RUNS ================= -->
+  <section class="page" id="page-runs" data-title="Runs">
+    <div class="section">
+      <div class="section-head">
+        <h2>Runs</h2>
+        <div class="sub">two honest levels: ticket summaries and every individual attempt - where a row stops is the finding</div>
+        <div class="chips" role="group" aria-label="Filter runs by disposition"></div>
+        <!-- V4.4: search by ticket / run id / workflow id, plus the three
+             axis filters. Option lists are derived from the data. -->
+        <div class="runs-toolbar" role="group" aria-label="Search and filter runs"></div>
+      </div>
+      <div class="panel">
+        <div class="walk-head">
+          <div class="eyebrow">Ticket</div>
+          <div class="gate-cols"></div>
+          <div class="eyebrow">Disposition</div>
+        </div>
+        <div class="walk"></div>
+        <div class="legend">
+          <div class="item"><span class="mark pass"></span> passed</div>
+          <div class="item"><span class="mark halt"></span> a human is needed - the gate did its job</div>
+          <div class="item"><span class="mark fail"></span> something is wrong</div>
+          <div class="item"><span class="mark unknown"></span> unknown - we did not measure it</div>
+          <div class="item"><span class="mark skipped"></span> skipped by policy - did not run, did not pass</div>
+          <div class="item"><span class="mark never_reached"></span> never reached</div>
+        </div>
+      </div>
+      <div class="sub" style="padding-top:10px">Click any run for its gate evidence, agent timeline, artifacts and every other table this ledger holds about it.</div>
+      <details class="gate-legend-wrap">
+        <summary>What do COMP, PLAN, SPEC, DEV, REV, SEC, QA, MUT mean?</summary>
+        <div class="gate-legend"></div>
+      </details>
+    </div>
+
+    <!-- V4.4: the all-attempts lens. Every attempt of every ticket, one
+         row each, sharing the toolbar's filters. Selecting a row scopes
+         the ticket drill-down above to exactly that attempt. -->
+    <div class="section">
+      <div class="section-head">
+        <h2>All attempts</h2>
+        <div class="sub">One row per run of every ticket, newest first. An
+        old attempt keeps its own verdict, gates, timeline and artifacts -
+        it never inherits the newest attempt's.</div>
+      </div>
+      <div class="panel"><div class="runs-attempts"></div></div>
+    </div>
+  </section>
+
+  <!-- ================= GATES ================= -->
+  <section class="page" id="page-gates" data-title="Gates">
+    <div class="section">
+      <div class="section-head">
+        <h2>Gates</h2>
+        <div class="sub">What each gate caught that everything upstream let
+        through, with every recorded state in its own column. Ran counts
+        decisions (pass + fail) - policy skips, unknowns and never-reached
+        rows never enter the pass-rate denominator. The roll-up scores each
+        run's latest durable row: the ledger is append-only, so a gate that
+        failed and then passed on repair counts once, as its latest durable
+        row. A measured zero renders 0 in every cell; only a value nobody
+        measured earns the dash. Each gate's full name and purpose is shown
+        in the first column.</div>
+      </div>
+      <div class="panel">
+        <div class="gate-scroll">
+        <table class="grid">
+          <caption class="srx">Gate statistics for the selected project</caption>
+          <thead>
+            <tr><th>Gate</th><th title="decisions: pass + fail rows (the pass-rate denominator)">Ran</th><th>Passed</th><th title="fail rows this gate recorded across all attempts">Failed</th><th title="runs whose stop landed on this gate - what it caught that every upstream gate let through">Caught</th><th title="runs a human had to answer at this gate">Halted</th><th title="the gate ran and could not decide">Unknown</th><th title="policy skips - the gate was switched off, not passed">Skipped</th><th title="the run ended upstream before this gate">Never reached</th><th>Score (min-med-max)</th><th>Pass rate</th></tr>
+          </thead>
+          <tbody id="gate-body"></tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+    <p class="tab-intro" style="margin-top:12px">Why runs stop (the
+    failure taxonomy) lives once, on <a class="act"
+    href="#/overview">Overview</a>. A measured zero renders 0 in every
+    cell above; only a value nobody measured earns the dash.</p>
+  </section>
+
+  <!-- ================= FINDINGS ================= -->
+  <section class="page" id="page-findings" data-title="Findings">
+    <div class="section">
+      <div class="section-head">
+        <h2>Findings - the investigation workspace</h2>
+        <div class="sub">Docket's primary metric as evidence you can walk: every recorded finding, its resolution chain, and the repair economics behind it. Lifecycle and taxonomy are two vocabularies over the same rows and are never summed. CONFIRMED is a lifecycle fact - a claim that survived triage - not automatically a defect.</div>
+      </div>
+      <div class="findings-tab"></div>
+    </div>
+  </section>
+
+  <!-- ================= COST ================= -->
+  <section class="page" id="page-cost" data-title="Cost">
+    <div class="section">
+      <div class="section-head">
+        <h2>What this ledger recorded</h2>
+        <div class="sub">Input, output, cache and cost, from one accounting authority. Every figure says what it is based on; a figure nobody measured is a dash, never a zero.</div>
+      </div>
+      <div class="panel">
+        <div class="acct" id="acct-body"></div>
+        <div class="acct acct-cov" id="acct-coverage"></div>
+        <div class="legend acct-note"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Token flow</h2>
+        <div class="sub">Counted subtotals over the token-counted calls.
+        Cached-read tokens are a share of counted input, never an addend;
+        a split nobody reported is absent, not zero.</div>
+      </div>
+      <div class="panel tokflow" id="tokflow"></div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Where tokens went</h2>
+        <div class="sub">Recorded input tokens by stage, agent, model and
+        ticket. Selecting a bar filters the call explorer below; selecting
+        it again clears. The bars draw from the full call-ledger
+        aggregates while the explorer searches its retained sample - each
+        states its own population.</div>
+      </div>
+      <div class="u-breaks"></div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Per-call detail</h2>
+        <div class="sub">One row per retained model call. Search and the
+        six filters cover the retained rows only; the population line
+        states how many calls the ledger actually records.</div>
+      </div>
+      <div class="percall-bar"></div>
+      <div class="panel"><div class="percall-host"></div></div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Pipeline economics</h2>
+        <div class="sub">The nine stages side by side - where the spend
+        concentrates and where repair loops bite. Stage attribution is
+        each actor's roster stage (context-mapping actors fold onto Blast
+        Radius); recorded events are ledger rows by the actor, not
+        necessarily model calls - metered calls live in the call ledger
+        above. The bar column is proportional to recorded input
+        tokens.</div>
+      </div>
+      <div class="panel"><div class="gate-scroll" id="stage-econ"></div></div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>What it cost, across this scope</h2>
+        <div class="sub">The ticket-level money figures, with the share of runs and tickets they are based on. A total is only shown when every contributor recorded a price.</div>
+      </div>
+      <div class="panel">
+        <div class="acct" id="scope-cost-body"></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Cost by agent</h2>
+        <div class="sub">Which agent is spending the money.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <caption class="srx">Cost and tokens by agent</caption>
+          <thead>
+            <tr><th>Agent</th><th>Cost</th><th>Calls</th><th>Tokens in</th><th>Tokens out</th></tr>
+          </thead>
+          <tbody id="agent-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section" data-needs="models">
+      <div class="section-head">
+        <h2>Models</h2>
+        <div class="sub">Which model is spending it.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <caption class="srx">Cost and tokens by model</caption>
+          <thead>
+            <tr><th>Model</th><th>Cost</th><th>Calls</th><th>Cost/call</th></tr>
+          </thead>
+          <tbody id="model-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROMPTS ================= -->
+  <section class="page" id="page-prompts" data-title="Prompts" data-needs="prompt_versions">
+    <div class="section">
+      <div class="section-head">
+        <h2>Prompt versions</h2>
+        <div class="sub">Every event records the version that produced it.
+        Tickets touched and Merged are both ticket-keyed: the builder
+        tallies distinct issue keys per version, never run ids. A version
+        with fewer than 5 calls carries a small-sample tag - its rate is
+        an anecdote, not a signal.</div>
+      </div>
+      <div class="prompts-bar percall-bar"></div>
+      <div class="panel">
+        <div class="gate-scroll">
+        <table class="grid">
+          <caption class="srx">Prompt versions, ticket-keyed</caption>
+          <thead>
+            <tr><th>Version</th><th>Base</th><th>Delta</th><th>Agent</th><th>Stage(s)</th><th>Models</th><th>Calls</th><th>Tickets touched</th><th>Merged (tickets)</th><th>Merge rate</th><th>Tok in</th><th>Cost</th></tr>
+          </thead>
+          <tbody id="prompt-body"></tbody>
+        </table>
+        </div>
+        <div class="legend">
+          Correlation, not cause - too much moves at once to claim a version made a
+          ticket merge. It tells you where to look.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ARTIFACTS ================= -->
+  <section class="page" id="page-artifacts" data-title="Artifacts" data-needs="artifact_kinds">
+    <div class="section">
+      <div class="section-head">
+        <h2>Artifacts</h2>
+        <div class="sub">What the pipeline produced, under development/&lt;release&gt;/&lt;ticket&gt;/.</div>
+      </div>
+      <div class="panel">
+        <table class="grid">
+          <caption class="srx">Recorded artifacts</caption>
+          <thead>
+            <tr><th>Section</th><th>Files</th><th>Tickets</th><th>Bytes</th></tr>
+          </thead>
+          <tbody id="artifact-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>Evidence browser</h2>
+        <div class="sub">Every attempt's artifact rows, searchable and
+        filterable. The ledger records paths and hashes; content stays in
+        the workspace. The visible sha is a ten-character display prefix -
+        Copy carries all 64 characters, and a clipboard the host refuses
+        produces an honest failure, never a silent no-op. Paths are never
+        auto-linked; containment decides host-open eligibility.</div>
+      </div>
+      <div class="artbrowse-bar percall-bar"></div>
+      <div class="panel"><div class="artbrowse-host"></div></div>
+    </div>
+  </section>
+
+  <!-- ================= AGENTS ================= -->
+  <section class="page" id="page-agents" data-title="Agents">
+    <div class="section">
+      <div class="section-head">
+        <h2>The agent roster</h2>
+        <div class="sub">Every actor the payload returns - what it does,
+        what it reads and writes, and how much it has run. Actor types and
+        capability pills come from the roster (agent_info), never inferred
+        from whether historical model rows happen to exist. "Has recorded
+        activity" means ledger rows exist in scope - there is no live
+        actor state to report.</div>
+      </div>
+      <div class="agents-stats panel"></div>
+      <div class="agents-bar percall-bar"></div>
+      <div class="agent-grid"></div>
+    </div>
+  </section>
+
+  <!-- ================= ARCHITECTURE ================= -->
+  <section class="page" id="page-architecture" data-title="Architecture">
+    <div class="arch"></div>
+  </section>
+
+  <!-- ================= LEDGER ================= -->
+  <section class="page" id="page-ledger" data-title="Ledger" data-needs="inventory">
+    <div class="section">
+      <div class="section-head">
+        <h2>The database</h2>
+        <div class="sub">The ledger is append-only: events and checkpoints
+        by trigger; gates and findings supersede with later rows, never
+        updates in place. It is the source of truth, and this dashboard is
+        not the only reader - loop.py, the knowledge system and the run
+        monitor all read the same file. Facts below are measured by the
+        payload builder; a value nobody measured is a dash with its
+        reason.</div>
+      </div>
+      <div class="panel"><div class="acct" id="db-facts"></div></div>
+    </div>
+    <div class="section">
+      <div class="section-head">
+        <h2>The rest of the ledger</h2>
+        <div class="sub">Tables nobody told the dashboard about. Found by
+        reading your schema, not by being described. Inventory counts
+        cover the whole ledger - every project - while the other tabs are
+        scoped to the selected project; the two denominators are never
+        mixed.</div>
+      </div>
+      <div class="inventory"></div>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <span>Read-only. This page renders <code>ledger.db</code> and cannot change it.</span>
+    <span>An em-dash means the ledger did not record it. It never means zero.</span>
+    <span>__DOCKET_STAMP__</span>
+  </footer>
+</main>
+
+<script>window.DOCKET_PAYLOAD = __DOCKET_PAYLOAD__;</script>
+<script>__DOCKET_JS__</script>
+</body>
+</html>

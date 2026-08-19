@@ -1,0 +1,101 @@
+{
+  "_comment": "Docket workbench config. This folder is portable - copy it anywhere. The working project sits BESIDE it, never inside it. Every key ships with its neutral default; null means resolve at runtime.",
+  "python": null,
+  "_python": "null = resolve at runtime: <project>/venv, <project>/.venv, then PATH. Pin an absolute venv path only if resolution picks the wrong one. Spawned scripts do NOT inherit an activated venv.",
+  "transport": {
+    "sessions": false,
+    "session_budget_usd": null,
+    "session_weights": {
+      "main": 0.5,
+      "test_spec": 0.15,
+      "review": 0.2,
+      "qa": 0.15
+    }
+  },
+  "_transport": "sessions: false = today's stateless one-shot path (byte-identical wire). true = persistent role sessions (main/test_spec/review/qa) over a session-capable transport (Option B): one long-lived provider conversation per role per run, opened once, then DELTA turns only; deterministic gates, artifacts and evidence unchanged; a dead session falls back to the stateless path mid-run. Only the headless claude gateway supports sessions today - under vscode.lm the flag is inert (capability-gated). Per-run override: --sessions on|off.",
+  "project": null,
+  "_project": "Active sibling project folder name. Set by 'Docket: Select Project' or 'Docket: Clone Project'. null = ask on first run.",
+  "models": {
+    "worker": "claude-sonnet-4.6",
+    "judge": "claude-sonnet-5",
+    "second_plan": "gpt-5.3-codex",
+    "cheap": "gpt-5.4-mini"
+  },
+  "_models": "These pins are known-good for this workbench's org as of 2026-07. On a different Copilot org, delete any wrong pin (null = resolve at runtime by role); a visible warning + fallback fires on a bad pin - see extension/src/models.js.",
+  "governor": {
+    "budget_usd_per_ticket": 2.5,
+    "max_tokens_per_run": 3000000,
+    "_max_tokens_per_run": "Deterministic per-run token brake (ledger-summed, never self-reported), checked before develop/review/qa/mutation. Over cap = clean halt; --resume continues from what passed. Set 0 to disable. CALIBRATION: the summed tokens_in INCLUDES prompt-cache creation AND cache reads (headless gateway reports the full context size honestly); cache reads bill at roughly a tenth of fresh input, so recorded tokens overstate real spend several-fold. 3M recorded is roughly 800k fresh-input-equivalent. The 800k cap set here previously halted a normal simple ticket (DATACMP-1, 2026-07-30) mid-run at 1.1M recorded and forced two manual resumes.",
+    "fast_path": "auto",
+  "_fast_path": "auto | always | never.  The LOW-RISK FAST PATH (mission Workstream D). On a ticket deterministic checks measure as small - clean comprehension, at most four testable criteria, the ticket names at most three files the repository actually contains, at most three owning modules, no danger zone, no forced bake-off - the blast radius and the implementation plan come out of ONE main-agent turn plus at most one batched follow-up read, as two separate typed artifacts through their two separate validators. Live run DATACMP-0-b53bd016 spent nine model calls before development on exactly such a ticket and never reached it. 'auto' lets prefetch.low_risk_candidate decide from those facts; 'always' forces the fused turn and RECORDS which signals it overrode; 'never' keeps every ticket on the separate lead and planner stages. ONE signal is not an operator's to override: a pending plan/plan-change-request.md means a human already asked for a different plan on this ticket, and that always routes to the slow path, which reads the request, feeds it to the planner and renames it .applied. Note the blind-judge bake-off cannot run on the fused turn (it produces one plan), so an eligible ticket forecloses it; with the shipped fan_out_plans 'never' that changes nothing today. A fast turn that needs more than its budget raises a typed complexity escalation and stops - it never silently buys another turn.",
+  "envelope": "auto",
+    "_envelope": "auto | vscode_low_risk | off.  THE VS CODE ENVELOPE (mission Task 16, perf_envelope.VSCODE_ENVELOPE): at most 4 pre-development model requests, at most 35,000 countable pre-development tokens (target 25,000) and at most 75,000 countable tokens over the whole clean path (target 60,000). Tokens here are ACTUAL input + output with no cache discount, because vscode.lm declares cache_metrics unavailable and a discount nobody can measure is a discount nobody should take. Crossing a maximum raises a TYPED complexity escalation and STOPS the run - it does not warn. 'auto' arms it only where it applies: a VS Code transport (by the gateway's own capability document, never by a config key) running a ticket prefetch.low_risk_candidate already put on the low-risk fast path. 'vscode_low_risk' forces it on any transport; 'off' disables it and the run says so. Provider LATENCY is never gated here - Docket cannot promise another service's response time - so the two time bullets (first developer edit within 2 minutes, frozen-test generation and validation within 90 seconds) are proved by perf_envelope.py --simulate-vscode against a declared latency model and only REPORTED on a live run.",
+    "fan_out_plans": "never",
+    "_fan_out_plans": "auto | always | never.  'auto' trusts the lead's risk call - it sets fan_out_plans per ticket and only fans out when there is something to disagree about. 'always' forces 3 planners + a blind judge on every ticket; useful to see the machinery, and to find out whether the bake-off actually helps YOUR tickets - the ledger records which model won each time, so after 20 tickets that is a query, not an argument. 'never' is one planner, always. Plans are ~6k tokens for three; a wrong plan that runs to QA and back is ~200k, so the arithmetic favours fanning out when the ticket is genuinely ambiguous and wastes money when it is not."
+  },
+  "developer": {
+    "review_repair_rounds": 2,
+    "qa_repair_rounds": 2,
+    "post_repair_review": true,
+    "_note": "Bounded repair loops. A repair round re-runs only the failed stage plus a re-review/re-test, far cheaper than a fresh run of five stages. post_repair_review controls whether a repaired stage goes back through blind_review before re-testing, instead of skipping straight to QA - leave true unless you are deliberately trading rigor for speed.",
+    "unit_command": null,
+    "_unit_command": "null = <python> -m pytest for the per-task unit gate and mutation runs. Set an argv LIST for non-pytest stacks."
+  },
+  "gates": {
+    "comprehension": {
+      "enabled": true,
+      "threshold": 1,
+      "_threshold": "1.0 = halt on ANY unresolved ambiguity and ask the ticket author; lower trades questions for guesses."
+    },
+    "plan_approval": {
+      "enabled": false,
+      "_enabled": "Opt-in human plan-approval gate. When true, the run halts after planning and writes plan/implementation-plan.md with a DRAFT marker as its first line; deleting that line and resuming the run records plan_approval pass and continues into test-spec. false (default) is the old behavior: planning flows straight into test-spec with zero change."
+    },
+    "frozen_tests": {
+      "enabled": true
+    },
+    "blind_review": {
+      "enabled": true
+    },
+    "unit_tests": {
+      "enabled": true
+    },
+    "security_snyk": {
+      "enabled": false,
+      "_note": "Flip on once the Snyk binary and service account exist."
+    },
+    "mutation": {
+      "enabled": true,
+      "kill_rate_threshold": 0.8,
+      "_kill_rate_threshold": "Fraction of mutants that must be killed (tests fail against the mutant) to pass the gate. Below this, surviving mutants are recorded as TEST_GAP_FOUND evidence, not a hard block.",
+      "diff_only": true,
+      "_diff_only": "true = mutate only lines touched by the diff (fast, focused); false = mutate the whole touched file(s) - slower, catches gaps outside the diff but far noisier."
+    },
+    "qa_e2e": {
+      "enabled": true
+    }
+  },
+  "qa": {
+    "acceptance_command": null,
+    "_acceptance_command": "null = <python> -m pytest over the frozen acceptance dir. Set an argv LIST (e.g. [\"npm\", \"test\"]) for non-pytest stacks."
+  },
+  "coverage": {
+    "test_command": null,
+    "_test_command": "null = coverage run -m pytest. Set an argv LIST for non-pytest stacks."
+  },
+  "jira": {
+    "base_url_env": "JIRA_BASE_URL",
+    "token_env": "JIRA_PAT",
+    "trigger_label": "docket-ready",
+    "ac_field_ids": null,
+    "_ac_field_ids": "Comma-separated customfield IDs to check FIRST for acceptance criteria, e.g. 'customfield_10300'. null = search: scan custom fields, then rendered fields, then an 'Acceptance Criteria' heading in the description. Jira does not return field NAMES in the issue payload, which is why this is a search and not a setting. Run `python scripts/jira_fetch.py PROJ-110` to see which tier found yours, then pin it here to skip the search.",
+    "_note": "Env var NAMES, never values. Nothing secret lives in this file. Put JIRA_BASE_URL and JIRA_PAT in your environment, or in <workbench>/.local/docket-runtime.env (gitignored).",
+    "post_questions": true,
+    "_post_questions": "On escalation, post the blocking questions to the ticket as a numbered comment. A question in a log is a question nobody answers - the ticket is where the author already is, and where the answer belongs next to what it clarifies. Docket reads replies posted AFTER its own comment (matched by a run-scoped marker), so old chatter is never mistaken for an answer. Set false to keep questions in the output channel and ledger only."
+  },
+  "ledger": {
+    "db": "ledger.db",
+    "_local": "Relative to this workbench folder. ONE ledger serves every sibling project - the 'project' column separates them, and cross-project org findings come free.",
+    "_never_share": "Do NOT point this at a network share. SQLite's WAL mode does not work over NFS/SMB and locking there is broken - that is a data-loss incident with a countdown. Events are append-only, so federating later is an export/import, not a shared file. Every run records its origin (user@host) so ledgers can be merged without id collisions."
+  }
+}

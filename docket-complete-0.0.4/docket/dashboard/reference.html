@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docket - Operations Reference</title>
+<style>
+  :root{
+    --paper:#eef0f3; --surface:#ffffff; --ink:#151b26; --navy:#10192b;
+    --muted:#5b6473; --faint:#8a93a2; --line:#e0e4ea; --line2:#eaedf2;
+    --sys:#0e7c72;        /* automatic - agent or deterministic code */
+    --sys-bg:#e4f2f0;
+    --you:#b45309;        /* a human decision - yours */
+    --you-bg:#f7ecdd;
+    --stop:#b42318;       /* blocked / enforced boundary */
+    --ok:#0e7c72;
+    --mono:"Cascadia Code","Cascadia Mono",Consolas,"SFMono-Regular",ui-monospace,monospace;
+    --ui:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);font-family:var(--ui);
+    line-height:1.5;font-size:15px;
+  }
+  a{color:var(--sys)}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+
+  /* header */
+  header{background:var(--navy);color:#e9edf3;border-bottom:3px solid var(--sys)}
+  .head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+        padding:26px 22px 22px;max-width:1080px;margin:0 auto}
+  .mark{font-family:var(--mono);font-weight:700;font-size:26px;letter-spacing:-.5px;
+        color:#fff}
+  .mark .dot{color:var(--sys)}
+  .head h1{margin:0;font-size:15px;font-weight:500;letter-spacing:.14em;
+           text-transform:uppercase;color:#aeb8c6}
+  .head .meta{margin-left:auto;font-family:var(--mono);font-size:12px;color:#7f8a9b}
+
+  section{padding:34px 0 6px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;
+           text-transform:uppercase;color:var(--faint);margin:0 0 4px}
+  h2{font-size:23px;margin:0 0 4px;letter-spacing:-.4px}
+  .lede{color:var(--muted);margin:0 0 20px;max-width:64ch}
+
+  /* ownership panel (signature) */
+  .own{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+       border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:8px}
+  .own > div{background:var(--surface);padding:20px 22px}
+  .own h3{margin:0 0 12px;font-size:13px;letter-spacing:.1em;text-transform:uppercase}
+  .own .yours h3{color:var(--you)}
+  .own .auto h3{color:var(--sys)}
+  .own ul{margin:0;padding:0;list-style:none}
+  .own li{position:relative;padding:7px 0 7px 26px;border-top:1px solid var(--line2);
+          font-size:14.5px}
+  .own li:first-child{border-top:0}
+  .own li::before{position:absolute;left:0;top:7px;font-family:var(--mono);
+                  font-size:13px;font-weight:700}
+  .own .yours li::before{content:"\25C6";color:var(--you)}   /* diamond */
+  .own .auto li::before{content:"\2192";color:var(--sys)}    /* arrow */
+  .own small{color:var(--faint)}
+
+  /* commands */
+  .toolbar{display:flex;gap:10px;align-items:center;margin:0 0 18px;flex-wrap:wrap}
+  .search{flex:1;min-width:220px;display:flex;align-items:center;gap:8px;
+          background:var(--surface);border:1px solid var(--line);border-radius:9px;
+          padding:9px 12px}
+  .search input{border:0;outline:0;font:inherit;width:100%;background:transparent;
+                color:var(--ink)}
+  .search span{color:var(--faint);font-family:var(--mono);font-size:13px}
+  .count{font-family:var(--mono);font-size:12px;color:var(--faint);white-space:nowrap}
+
+  .grp{margin:0 0 22px}
+  .grp > h3{display:flex;align-items:center;gap:10px;font-size:13px;
+            letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+            margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .grp .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+            padding:2px 7px;border-radius:999px;text-transform:none}
+  .tag.manual{background:var(--you-bg);color:var(--you)}
+  .tag.live{background:var(--sys-bg);color:var(--sys)}
+
+  .cmd{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+       padding:13px 14px;margin:0 0 9px}
+  .cmd .row{display:flex;align-items:flex-start;gap:12px}
+  .cmd code{font-family:var(--mono);font-size:13px;color:var(--ink);
+            white-space:pre-wrap;word-break:break-word;flex:1;line-height:1.55}
+  .cmd code .flag{color:var(--sys)}
+  .cmd code .arg{color:var(--you)}
+  .copy{flex:none;border:1px solid var(--line);background:#fbfcfd;color:var(--muted);
+        font-family:var(--mono);font-size:11px;padding:5px 9px;border-radius:7px;
+        cursor:pointer;transition:.15s}
+  .copy:hover{border-color:var(--sys);color:var(--sys)}
+  .copy.done{border-color:var(--ok);color:var(--ok)}
+  .cmd .desc{margin:9px 0 0;color:var(--muted);font-size:13.5px}
+  .cmd .desc b{color:var(--ink);font-weight:600}
+  .noresults{display:none;color:var(--muted);font-style:italic;padding:8px 2px}
+
+  /* responsibility matrix */
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 16px;font-size:13px;
+          color:var(--muted)}
+  .legend b{font-family:var(--mono);font-weight:700}
+  .k-sys{color:var(--sys)} .k-you{color:var(--you)} .k-stop{color:var(--stop)}
+
+  .matrix{width:100%;border-collapse:collapse;background:var(--surface);
+          border:1px solid var(--line);border-radius:12px;overflow:hidden;
+          font-size:14px}
+  .matrix thead th{background:#f6f8fa;text-align:left;font-size:11px;
+                   letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+                   padding:11px 14px;border-bottom:1px solid var(--line)}
+  .matrix td{padding:12px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+  .matrix tr:last-child td{border-bottom:0}
+  .matrix .stage{font-weight:600;white-space:nowrap}
+  .matrix .stage .st{display:block;font-family:var(--mono);font-size:11px;
+                     font-weight:400;margin-top:2px}
+  .st.live{color:var(--sys)} .st.plan{color:var(--faint)}
+  .who{font-family:var(--mono);font-size:12.5px}
+  .who.you{color:var(--you);font-weight:700}
+  .who.sys{color:var(--sys)}
+  .enforce{color:var(--muted);font-size:13px}
+  .enforce .lock{color:var(--stop);font-weight:600}
+  .yn{font-family:var(--mono);font-size:12px;font-weight:700}
+  .yn.y{color:var(--you)} .yn.n{color:var(--faint);font-weight:400}
+
+  .principle{margin:26px 0 10px;background:var(--navy);color:#dde3ec;
+             border-radius:12px;padding:22px 24px}
+  .principle .big{font-family:var(--mono);font-size:20px;color:#fff;margin:0 0 8px;
+                  letter-spacing:-.3px}
+  .principle .big .a{color:var(--sys)} .principle .big .b{color:#f0b45e}
+  .principle p{margin:0;color:#aeb8c6;max-width:70ch;font-size:14px}
+
+  footer{color:var(--faint);font-size:12.5px;padding:30px 0 50px;
+         border-top:1px solid var(--line);margin-top:26px}
+  footer code{font-family:var(--mono)}
+
+  @media (max-width:720px){
+    .own{grid-template-columns:1fr}
+    .head .meta{margin-left:0;width:100%}
+    .matrix .hide-sm{display:none}
+    .cmd .row{flex-direction:column}
+    .copy{align-self:flex-end}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head">
+    <span class="mark">docket<span class="dot">.</span></span>
+    <h1>Operations Reference</h1>
+    <span class="meta">run from docket/ &middot; python 3</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- WHO OWNS WHAT -->
+  <section id="roles">
+    <p class="eyebrow">Roles</p>
+    <h2>You and the agents</h2>
+    <p class="lede">Docket runs the ticket. You make the calls it is not allowed to
+      make for you. Here is the whole division of labour in one look: the left is
+      yours, the right runs on its own.</p>
+
+    <div class="own">
+      <div class="yours">
+        <h3>You decide</h3>
+        <ul>
+          <li>Ratify the drafted context <small>&mdash; nothing proceeds until you sign off</small></li>
+          <li>Answer the spec agent's questions <small>&mdash; when a ticket is ambiguous</small></li>
+          <li>Approve or refuse widening the blast radius</li>
+          <li>Decide when to roll back, and to which checkpoint</li>
+          <li>Approve the final merge into real git</li>
+          <li>Act on the retro's findings</li>
+        </ul>
+      </div>
+      <div class="auto">
+        <h3>Runs without you</h3>
+        <ul>
+          <li>Reading the ticket, mapping the repo, drafting the plan</li>
+          <li>Saving the original state and a checkpoint per task</li>
+          <li>Writing code inside the agreed boundary</li>
+          <li>Freezing tests, running units, mutation, security, QA</li>
+          <li>Blind peer review of the diff</li>
+          <li>Recording every step to the ledger</li>
+        </ul>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:14px">Six decisions are yours. Everything else
+      is the machine's &mdash; and the one that matters most to you,
+      <b>rolling back</b>, is deliberately not automated: a failed gate or a person
+      chooses to restore, the checkpointer never silently reverts your work.</p>
+  </section>
+
+  <!-- COMMANDS -->
+  <section id="commands">
+    <p class="eyebrow">Commands</p>
+    <h2>Everything you can run</h2>
+    <p class="lede">All from inside <code>docket/</code>. Type to filter as the list
+      grows. <span class="k-you" style="font-family:var(--mono);font-size:12px">manual for now</span>
+      marks commands the agent will call for you once the developer loop exists.</p>
+
+    <div class="toolbar">
+      <label class="search"><span>&#9906;</span>
+        <input id="q" type="text" placeholder="filter commands, e.g. rollback, checkpoint, doctor"
+               autocomplete="off" aria-label="Filter commands">
+      </label>
+      <span class="count" id="count"></span>
+    </div>
+
+    <!-- setup -->
+    <div class="grp" data-grp>
+      <h3>Setup <span class="tag live">one-time</span></h3>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python apply_contract.py</code><button class="copy">copy</button></div>
+        <p class="desc">Rewrite the dashboard's schema mapping so it matches your
+          <b>ledger.db</b>. Run it in the folder you actually work from.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python apply_checkpoints_schema.py <span class="flag">--db</span> ledger.db</code><button class="copy">copy</button></div>
+        <p class="desc">Install the <b>checkpoints</b> and <b>rollbacks</b> tables.
+          Additive and idempotent &mdash; it never touches runs, gates, or events.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python apply_checkpoints_schema.py <span class="flag">--db</span> ledger.db <span class="flag">--doctor</span></code><button class="copy">copy</button></div>
+        <p class="desc">Check the checkpoint tables are present and correct, changing nothing.</p>
+      </div>
+    </div>
+
+    <!-- dashboard -->
+    <div class="grp" data-grp>
+      <h3>Dashboard <span class="tag live">live</span></h3>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python payload_builder.py <span class="flag">--db</span> ledger.db <span class="flag">--doctor</span></code><button class="copy">copy</button></div>
+        <p class="desc">Health-check the schema mapping. Reports <b>ok</b> / <b>PARTIAL</b>
+          per table so you catch a drifted column before building a report.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python report.py <span class="flag">--db</span> ledger.db <span class="flag">--out</span> report.html</code><button class="copy">copy</button></div>
+        <p class="desc">Build the self-contained static dashboard you can open or send on.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python serve.py <span class="flag">--db</span> ledger.db</code><button class="copy">copy</button></div>
+        <p class="desc">Serve the live dashboard on localhost, refreshing as the ledger changes.</p>
+      </div>
+    </div>
+
+    <!-- checkpoints: create -->
+    <div class="grp" data-grp>
+      <h3>Checkpoints &middot; create <span class="tag manual">manual for now</span></h3>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint.py init <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--project</span> <span class="arg">onetest</span> <span class="flag">--root</span> <span class="arg">..\onetest</span> <span class="flag">--radius</span> <span class="arg">path1 path2</span></code><button class="copy">copy</button></div>
+        <p class="desc">Start versioning a ticket. Saves the <b>original state</b>
+          (commit #0) before any code is touched. The radius is what may change.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint.py init <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--project</span> <span class="arg">onetest</span> <span class="flag">--root</span> <span class="arg">..\onetest</span> <span class="flag">--radius-file</span> <span class="arg">plan\blast-radius.json</span></code><button class="copy">copy</button></div>
+        <p class="desc">Same, but take the radius straight from the lead's
+          <b>blast-radius.json</b> (reads <b>may_touch</b>, ignores must_not_touch).</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint.py save <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--task</span> <span class="arg">task-01</span> <span class="flag">--stage</span> <span class="arg">develop</span> <span class="flag">--label</span> <span class="arg">"declare mainframe block"</span></code><button class="copy">copy</button></div>
+        <p class="desc">Commit one checkpoint for a finished task. One per task, every
+          task restorable &mdash; even a no-op.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint.py status <span class="flag">--ticket</span> <span class="arg">OT-482</span></code><button class="copy">copy</button></div>
+        <p class="desc">Show the checkpoints saved so far and which one your tree matches now.</p>
+      </div>
+    </div>
+
+    <!-- checkpoints: restore -->
+    <div class="grp" data-grp>
+      <h3>Checkpoints &middot; restore <span class="tag live">yours to run</span></h3>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--list-tickets</span></code><button class="copy">copy</button></div>
+        <p class="desc">List every ticket that has checkpoints.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--ticket</span> <span class="arg">OT-482</span></code><button class="copy">copy</button></div>
+        <p class="desc">List a ticket's checkpoints, then pick one to restore. Shows a
+          preview of exactly what will change first.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--list</span></code><button class="copy">copy</button></div>
+        <p class="desc">List only, restore nothing.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--to-original</span></code><button class="copy">copy</button></div>
+        <p class="desc">Restore to the state <b>before any agent touched the code</b>.
+          New files created since are removed; changed files reverted.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--ticket</span> <span class="arg">OT-482</span> <span class="flag">--to</span> <span class="arg">task-05</span></code><button class="copy">copy</button></div>
+        <p class="desc">Restore to a specific checkpoint by task id, number, or sha. Add
+          <b>--yes</b> to skip the confirm.</p>
+      </div>
+    </div>
+
+    <!-- self tests -->
+    <div class="grp" data-grp>
+      <h3>Self-tests <span class="tag live">verify</span></h3>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpointer.py <span class="flag">--self-test</span></code><button class="copy">copy</button></div>
+        <p class="desc">The git core: byte-identical restore, stray-file removal, the verdict.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint_store.py <span class="flag">--self-test</span></code><button class="copy">copy</button></div>
+        <p class="desc">Installer is non-destructive; ledger mirror stays in sync with git.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python checkpoint.py <span class="flag">--self-test</span></code><button class="copy">copy</button></div>
+        <p class="desc">Init, save, blast-radius parsing, re-init safety.</p>
+      </div>
+      <div class="cmd" data-cmd>
+        <div class="row"><code>python rollback.py <span class="flag">--self-test</span></code><button class="copy">copy</button></div>
+        <p class="desc">List, resolve, restore to original and forward again, ledger record.</p>
+      </div>
+    </div>
+
+    <p class="noresults" id="noresults">No command matches that filter.</p>
+  </section>
+
+  <!-- FULL MATRIX -->
+  <section id="matrix">
+    <p class="eyebrow">Responsibility</p>
+    <h2>Who does what, stage by stage</h2>
+    <p class="lede">The pattern the whole system runs on: an agent (or a person)
+      <i>decides</i>, deterministic code <i>enforces</i>. Nothing that can be
+      computed is left to a model.</p>
+
+    <div class="legend">
+      <span><b class="k-sys">&#8594;</b> automatic (agent or code)</span>
+      <span><b class="k-you">&#9670;</b> your call</span>
+      <span><b class="k-stop">lock</b> a hard boundary code refuses to cross</span>
+      <span><b class="st live">live</b> built &middot; <b class="st plan">planned</b> not yet built</span>
+    </div>
+
+    <table class="matrix">
+      <thead>
+        <tr><th>Stage</th><th>Does the work</th><th class="hide-sm">What holds the line</th><th>You?</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="stage">Fetch ticket<span class="st live">script &middot; live</span></td>
+          <td class="who sys">Jira script</td>
+          <td class="enforce hide-sm">governor sequences it</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Comprehension<span class="st live">spec &middot; live</span></td>
+          <td class="who sys">spec agent</td>
+          <td class="enforce hide-sm">deterministic pre-gates; three-state result</td>
+          <td class="yn y">answer if asked &#9670;</td>
+        </tr>
+        <tr>
+          <td class="stage">Context<span class="st live">drafter &middot; live</span></td>
+          <td class="who sys">context_drafter</td>
+          <td class="enforce hide-sm">cannot proceed unratified</td>
+          <td class="yn y">ratify &#9670;</td>
+        </tr>
+        <tr>
+          <td class="stage">Map codebase<span class="st live">cartographer &middot; live</span></td>
+          <td class="who sys">cartographer</td>
+          <td class="enforce hide-sm">paths verified against the filesystem</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Declare scope<span class="st live">lead &middot; live</span></td>
+          <td class="who sys">lead</td>
+          <td class="enforce hide-sm"><span class="lock">PreToolUse hook</span> blocks edits outside the radius</td>
+          <td class="yn y">approve widening &#9670;</td>
+        </tr>
+        <tr>
+          <td class="stage">Save original<span class="st live">checkpointer &middot; engine live</span></td>
+          <td class="who sys">governor &rarr; checkpointer</td>
+          <td class="enforce hide-sm">git verifies the tree</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Plan<span class="st live">planner+judge &middot; live</span></td>
+          <td class="who sys">planner &times;2-3, blind judge</td>
+          <td class="enforce hide-sm">judge picks; you can review</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Freeze tests<span class="st plan">test-spec &middot; planned</span></td>
+          <td class="who sys">test-spec</td>
+          <td class="enforce hide-sm"><span class="lock">hook locks</span> the test files from the developer</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Write code<span class="st plan">developer &middot; planned</span></td>
+          <td class="who sys">developer</td>
+          <td class="enforce hide-sm"><span class="lock">hook blocks</span> out-of-radius edits</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Checkpoint tasks<span class="st live">checkpointer &middot; engine live</span></td>
+          <td class="who sys">governor &rarr; checkpointer</td>
+          <td class="enforce hide-sm">one commit per task; git verifies</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr style="background:var(--you-bg)">
+          <td class="stage">Roll back<span class="st live">rollback.py &middot; live</span></td>
+          <td class="who you">YOU decide</td>
+          <td class="enforce hide-sm">checkpointer restores &amp; proves byte-identical</td>
+          <td class="yn y">yours &#9670;</td>
+        </tr>
+        <tr>
+          <td class="stage">Unit + mutation<span class="st plan">scripts &middot; planned</span></td>
+          <td class="who sys">test scripts</td>
+          <td class="enforce hide-sm">governor gates on the result</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Security<span class="st plan">snyk+security &middot; planned</span></td>
+          <td class="who sys">snyk finds &rarr; security triages</td>
+          <td class="enforce hide-sm">script finds, agent judges, governor gates</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">Blind review<span class="st plan">reviewer &middot; planned</span></td>
+          <td class="who sys">reviewer</td>
+          <td class="enforce hide-sm">sees the diff + ticket only, nothing else</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr>
+          <td class="stage">QA<span class="st plan">qa &middot; planned</span></td>
+          <td class="who sys">qa designs &rarr; script fills volume</td>
+          <td class="enforce hide-sm">governor gates on e2e</td>
+          <td class="yn n">no</td>
+        </tr>
+        <tr style="background:var(--you-bg)">
+          <td class="stage">Merge to real git<span class="st plan">planned</span></td>
+          <td class="who you">YOU approve</td>
+          <td class="enforce hide-sm">one curated diff, pristine &rarr; final</td>
+          <td class="yn y">yours &#9670;</td>
+        </tr>
+        <tr>
+          <td class="stage">Retro<span class="st plan">retro &middot; planned</span></td>
+          <td class="who sys">retro agent</td>
+          <td class="enforce hide-sm">writes findings to evidence</td>
+          <td class="yn y">act on it &#9670;</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="principle">
+      <p class="big"><span class="a">Agent decides.</span> <span class="b">Code enforces.</span></p>
+      <p>The lead names the files that may change; a hook refuses any edit outside them.
+        The checkpointer restores a tree; git &mdash; not a model &mdash; proves it is
+        byte-identical. Sequencing, budgets, and gate order belong to the governor, a
+        state machine that cannot rationalise. You are kept in exactly the places where
+        judgement is irreversible: ratifying context, widening scope, rolling back,
+        merging.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Docket operations reference &middot; static, self-contained, safe to open offline.
+      To wire it into the dashboard as a tab, drop this file in <code>dashboard/</code>
+      and add a route in <code>app.js</code>; it reads nothing from the ledger, so it
+      needs no payload.</p>
+  </footer>
+</div>
+
+<script>
+(function(){
+  // copy buttons
+  document.querySelectorAll(".copy").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var code = btn.closest(".row").querySelector("code").innerText;
+      navigator.clipboard.writeText(code).then(function(){
+        var old = btn.textContent; btn.textContent = "copied"; btn.classList.add("done");
+        setTimeout(function(){ btn.textContent = old; btn.classList.remove("done"); }, 1200);
+      }).catch(function(){ btn.textContent = "select+copy"; });
+    });
+  });
+
+  // live filter
+  var q = document.getElementById("q");
+  var count = document.getElementById("count");
+  var cmds = Array.prototype.slice.call(document.querySelectorAll("[data-cmd]"));
+  var groups = Array.prototype.slice.call(document.querySelectorAll("[data-grp]"));
+  var none = document.getElementById("noresults");
+  var total = cmds.length;
+
+  function apply(){
+    var term = q.value.trim().toLowerCase();
+    var shown = 0;
+    groups.forEach(function(g){
+      var inGroup = 0;
+      g.querySelectorAll("[data-cmd]").forEach(function(c){
+        var hit = term === "" || c.innerText.toLowerCase().indexOf(term) !== -1;
+        c.style.display = hit ? "" : "none";
+        if(hit){ inGroup++; shown++; }
+      });
+      g.style.display = inGroup ? "" : "none";
+    });
+    none.style.display = shown === 0 ? "block" : "none";
+    count.textContent = term ? (shown + " / " + total) : (total + " commands");
+  }
+  q.addEventListener("input", apply);
+  apply();
+})();
+</script>
+</body>
+</html>

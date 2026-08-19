@@ -1,0 +1,99 @@
+{
+ "_note": "Sanitized STATIC TEST FIXTURE for g3_live_regression.py: only the historical numeric facts and call shapes the regression consumes, extracted from the perf record of the live run that failed Option B acceptance. No ticket text, identifiers, credentials or machine paths. Never regenerated, never edited - the module pins this file by sha256.",
+ "calls": {
+  "by_actor": {
+   "lead": {
+    "max_tokens_out": 3727,
+    "tokens_cached": 9187
+   },
+   "planner": {
+    "max_tokens_out": 5625,
+    "tokens_cached": 0
+   },
+   "spec": {
+    "max_tokens_out": 1909,
+    "tokens_cached": 0
+   },
+   "test-spec": {
+    "max_tokens_out": 11916,
+    "tokens_cached": 0
+   }
+  },
+  "calls": [
+   {
+    "actor": "spec",
+    "n": 1,
+    "prompt_chars": 25420,
+    "recorded": 11098,
+    "session_op": "open",
+    "stage": "comprehension",
+    "tokens_in": 9189,
+    "tokens_out": 1909
+   },
+   {
+    "actor": "lead",
+    "n": 2,
+    "prompt_chars": 29672,
+    "recorded": 18415,
+    "session_op": "send",
+    "stage": "blast_radius",
+    "tokens_in": 22957,
+    "tokens_out": 3727
+   },
+   {
+    "actor": "planner",
+    "failed": true,
+    "n": 3,
+    "prompt_chars": 35070,
+    "recorded": 8767,
+    "session_op": "send",
+    "stage": "plan",
+    "tokens_in": null,
+    "tokens_out": null
+   },
+   {
+    "actor": "planner",
+    "n": 4,
+    "prompt_chars": 35068,
+    "recorded": 20863,
+    "session_op": null,
+    "stage": "plan",
+    "tokens_in": 15238,
+    "tokens_out": 5625
+   },
+   {
+    "actor": "test-spec",
+    "failed": true,
+    "n": 5,
+    "prompt_chars": 23753,
+    "recorded": 5938,
+    "session_op": "open",
+    "stage": "frozen_tests",
+    "tokens_in": null,
+    "tokens_out": null
+   },
+   {
+    "actor": "test-spec",
+    "n": 6,
+    "prompt_chars": 23751,
+    "recorded": 22511,
+    "session_op": null,
+    "stage": "frozen_tests",
+    "tokens_in": 10595,
+    "tokens_out": 11916
+   }
+  ],
+  "cap": {
+   "value": 75000
+  },
+  "max_one_call_overshoot": 400000,
+  "model_calls": 6,
+  "recorded_tokens": 87592
+ },
+ "schema": "docket.g3_fixture.v1",
+ "timing": {
+  "phases": {
+   "frozen_tests": 400.417
+  }
+ }
+}

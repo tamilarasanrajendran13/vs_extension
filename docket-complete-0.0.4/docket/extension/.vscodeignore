@@ -1,0 +1,10 @@
+# Allowlist form: ignore everything, then re-include exactly what the
+# installed extension needs at runtime. The build tool's validate_vsix
+# check pins the resulting inventory against the same allowlist.
+**
+!package.json
+!extension.js
+!src/**
+!media/**
+!LICENSE.txt
+!README.md
