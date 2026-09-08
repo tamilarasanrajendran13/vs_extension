@@ -4,8 +4,7 @@ OneTest CLI mockup v3 — Slate theme, full-screen prompt_toolkit frame. Mock da
 
     pip install prompt_toolkit
     python onetest_cli_mockup_v3.py                        # full-screen app
-    python onetest_cli_mockup_v3.py --ascii                # ASCII glyphs (auto on legacy Windows console)
-    python onetest_cli_mockup_v3.py --unicode              # keep the glyphs on cmd.exe / PowerShell / PyCharm / Git Bash
+    python onetest_cli_mockup_v3.py --ascii                # ASCII glyphs (auto only when stdout cannot encode them)
     python onetest_cli_mockup_v3.py --anim 1.5             # shorter logo animation
     echo "run failed" | python onetest_cli_mockup_v3.py    # not a TTY → plain line output
 
@@ -93,18 +92,13 @@ ASCII = dict(tl="+", tr="+", bl="+", br="+", h="-", v="|", dot="*", hollow="o", 
 G: Dict[str, str] = dict(UNICODE)  # active glyph set, swapped in main()
 
 
-def detect_ascii(flag: bool, unicode_flag: bool = False) -> bool:
+def detect_ascii(flag: bool) -> bool:
     """
-    --ascii / ONETEST_ASCII=1 force ASCII. Otherwise a Windows console that is not known to render the
-    glyphs (no Windows Terminal, VS Code, ANSICON or ConEmu marker) gets ASCII unless --unicode /
-    ONETEST_UNICODE=1 says its font can cope. A stdout that cannot encode the glyphs always gets ASCII.
+    Unicode glyphs everywhere, Windows consoles included. ASCII only on request (--ascii / ONETEST_ASCII=1)
+    or when stdout cannot encode the glyphs (a redirected cp1252 stream on Windows), which would otherwise crash.
     """
     if flag or os.environ.get("ONETEST_ASCII"):
         return True
-    legacy_console = os.name == "nt" and not any(
-        os.environ.get(v) for v in ("WT_SESSION", "ANSICON", "ConEmuANSI", "TERM_PROGRAM"))
-    if legacy_console and not (unicode_flag or os.environ.get("ONETEST_UNICODE")):
-        return True  # classic conhost, PyCharm, Git Bash: cmd.exe fonts lack the spinner and rounded corners
     try:
         "".join(UNICODE.values()).encode(getattr(sys.stdout, "encoding", None) or "ascii")
     except (LookupError, UnicodeEncodeError):
@@ -1257,11 +1251,8 @@ def session_summary() -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     global STORE, ANIM_SECONDS
     ap = argparse.ArgumentParser(description="OneTest CLI mockup v3 (mock data)")
-    glyphs = ap.add_mutually_exclusive_group()
-    glyphs.add_argument("--ascii", action="store_true", help="ASCII glyphs; auto-detected on legacy Windows consoles")
-    glyphs.add_argument("--unicode", action="store_true",
-                        help="Unicode glyphs even on a Windows console that looks legacy (cmd.exe, PowerShell, PyCharm, "
-                             "Git Bash); ONETEST_UNICODE=1 does the same")
+    ap.add_argument("--ascii", action="store_true",
+                    help="ASCII glyphs (ONETEST_ASCII=1 does the same); automatic only when stdout cannot encode Unicode")
     ap.add_argument("--engine", choices=("spark", "polars"), default="spark", help="engine shown at start")
     ap.add_argument("--plain", action="store_true", help="plain line output; automatic when stdout is not a TTY")
     ap.add_argument("--state-dir", type=Path, default=default_state_dir(), metavar="DIR",
@@ -1271,7 +1262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     G.clear()
-    G.update(ASCII if detect_ascii(args.ascii, args.unicode) else UNICODE)
+    G.update(ASCII if detect_ascii(args.ascii) else UNICODE)
     st.engine = args.engine
     if args.anim is not None:
         ANIM_SECONDS = max(0.0, args.anim)
